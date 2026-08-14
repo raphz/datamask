@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      increment:
+        description: Which part of the version to bump
+        type: choice
+        default: minor
+        options: [patch, minor, major]
+      version:
+        description: Exact version to release, e.g. 1.0.0 (overrides the bump)
+        type: string
+        required: false
+
+# Tagging the commit and creating the release both write to the repository.
+permissions:
+  contents: write
+
+# Two releases must never race each other onto the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish to Maven Central
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # workflow_dispatch lets the caller pick any branch, and the versioning scheme only
+      # produces release candidates on main. Fail loudly rather than skip quietly.
+      - name: Refuse to release from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are cut from main. This run targets ${{ github.ref }}."
+          exit 1
+
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      # Nothing is tagged or uploaded until the same gate a pull request has to pass is
+      # green here.
+      - name: Verify
+        run: ./gradlew build
+
+      - name: Identify the tagger
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      # The tag is created locally and pushed only once Central has accepted the bundle.
+      # A local tag is all axion needs to resolve the plain release version, so ordering it
+      # this way means a rejected upload leaves nothing published behind.
+      - name: Create the release tag locally
+        env:
+          FORCE_VERSION: ${{ inputs.version }}
+          INCREMENT: ${{ inputs.increment }}
+        run: |
+          set -euo pipefail
+          if [ -n "$FORCE_VERSION" ]; then
+            ./gradlew createRelease "-Prelease.forceVersion=$FORCE_VERSION"
+          else
+            case "$INCREMENT" in
+              patch) INCREMENTER=incrementPatch ;;
+              minor) INCREMENTER=incrementMinor ;;
+              major) INCREMENTER=incrementMajor ;;
+              *) echo "::error::Unknown increment '$INCREMENT'"; exit 1 ;;
+            esac
+            ./gradlew createRelease "-Prelease.versionIncrementer=$INCREMENTER"
+          fi
+          # Read the tag back from git rather than reassembling it from the axion prefix.
+          TAG=$(git describe --tags --exact-match HEAD)
+          echo "VERSION=$(./gradlew -q currentVersion -Prelease.quiet)" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # `clean` matters: the jars from the verification step still carry the pre-release
+      # version. This task rebuilds them at $VERSION, signs everything, uploads the bundle
+      # to the Central Portal and blocks until the portal's validation comes back.
+      - name: Publish to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: ./gradlew clean publishAndReleaseToMavenCentral
+
+      - name: Push the tag
+        run: git push origin "$TAG"
+
+      # The GitHub release is the human-readable record. Maven Central is where the
+      # artifacts are actually consumed from; the jars are attached here for convenience.
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -t ARTIFACTS < <(find . -path '*/build/libs/*.jar' | sort)
+          gh release create "$TAG" \
+            --title "DataMask $VERSION" \
+            --generate-notes \
+            --verify-tag \
+            "${ARTIFACTS[@]}"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Released \`$VERSION\`"
+            echo
+            echo "- Maven Central: \`ch.raph.datamask:datamask-core:$VERSION\`"
+            echo "- Tag \`$TAG\` — ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"

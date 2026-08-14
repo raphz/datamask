@@ -1,7 +1,7 @@
 plugins {
     id 'java-library'
-    id 'maven-publish'
     id 'datamask.spotless-conventions'
+    id 'datamask.publishing-conventions'
 }
 
 def libs = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
@@ -12,8 +12,8 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
-    withSourcesJar()
-    withJavadocJar()
+    // The sources and javadoc jars Central requires are registered by
+    // datamask.publishing-conventions, so they are not declared a second time here.
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -43,24 +43,5 @@ tasks.named('test') {
     testLogging {
         events 'failed'
         exceptionFormat 'full'
-    }
-}
-
-publishing {
-    publications {
-        maven(MavenPublication) {
-            from components.java
-            pom {
-                name = project.name
-                description = 'DataMask - PII never accidentally reaches logs, traces or AI prompts.'
-                url = 'https://github.com/raphz/datamask'
-                licenses {
-                    license {
-                        name = 'The Apache License, Version 2.0'
-                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
-                    }
-                }
-            }
-        }
     }
 }

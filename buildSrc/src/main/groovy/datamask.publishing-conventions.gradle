@@ -1,0 +1,53 @@
+plugins {
+    id 'com.vanniktech.maven.publish'
+}
+
+// Applied by datamask.java-conventions and, separately, by datamask-bom — the BOM is a
+// java-platform and never goes through the Java conventions, but it is published to the
+// same place under the same identity.
+//
+// The plugin owns the whole route to Central: it builds the sources and javadoc jars,
+// signs every artifact, uploads the bundle to the Central Portal and waits for the
+// portal's validation to come back. Doing that by hand means reimplementing the Portal
+// API and, more importantly, discovering a validation failure only after the tag is
+// already public.
+mavenPublishing {
+    publishToMavenCentral()
+
+    // Central rejects an unsigned bundle. The key arrives through
+    // ORG_GRADLE_PROJECT_signingInMemoryKey, so nothing is read from a keyring on disk
+    // and no secret is written into the repository. Only the publish tasks sign; a plain
+    // `./gradlew build` needs no key at all.
+    signAllPublications()
+
+    pom {
+        name = project.name
+        // Read lazily: every module sets its own `description` further down its build
+        // script, which is after this convention plugin has already been applied.
+        description = provider { project.description }
+        url = 'https://github.com/raphz/datamask'
+        inceptionYear = '2026'
+
+        licenses {
+            license {
+                name = 'The Apache License, Version 2.0'
+                url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                distribution = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+            }
+        }
+
+        developers {
+            developer {
+                id = 'raphz'
+                name = 'Raphaël Zürcher'
+                url = 'https://github.com/raphz'
+            }
+        }
+
+        scm {
+            url = 'https://github.com/raphz/datamask'
+            connection = 'scm:git:https://github.com/raphz/datamask.git'
+            developerConnection = 'scm:git:ssh://git@github.com/raphz/datamask.git'
+        }
+    }
+}
