@@ -63,6 +63,9 @@ class ModuleDependencyTest {
     private static List<Integration> integrations() {
         return List.of(
                 new Integration("jackson", List.of("tools.jackson..")),
+                // SLF4J is how the interceptor reports a record it dropped: Kafka swallows an exception
+                // thrown from onSend, so a log line is the only way that failure is ever visible.
+                new Integration("kafka", List.of("org.apache.kafka..", "org.slf4j..")),
                 // The PostgreSQL driver is optional at runtime and compileOnly in the module, but the
                 // bytecode still refers to it, so it belongs in the allowance. SLF4J is the facade the
                 // statement logger writes through.

@@ -50,7 +50,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-logback` | **implemented** | Masking appender: log arguments, message bodies, MDC, exception messages |
 | `datamask-log4j2` | **implemented** | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
-| `datamask-kafka` | scaffolded, empty | Masking serializer + producer interceptor, headers included |
+| `datamask-kafka` | **implemented** | Masking serializer + producer interceptor, headers included |
 | `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
 | `datamask-jpa` | scaffolded, empty | `AttributeConverter`s for pseudonymised columns at rest |
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
@@ -89,17 +89,18 @@ the SPI in `datamask-api/README.md`. See `datamask-build` for what a module READ
 
 ## Roadmap — next modules, in the intended order
 
-Done: **`datamask-jackson`** (masks at serialization time) and **`datamask-jdbc`** (PostgreSQL error
-details plus bind parameters). What remains:
+Done: **`datamask-jackson`** (masks at serialization time), **`datamask-jdbc`** (PostgreSQL error
+details plus bind parameters), **`datamask-logback`** + **`datamask-log4j2`**, and
+**`datamask-kafka`** (masking serializer, producer interceptor, headers). What remains:
 
-1. **`datamask-logback`** + **`datamask-log4j2`**.
-2. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
+1. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
    `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
    **Key-policy decision already made: fail fast.** `HASH`/`TOKENIZE` must refuse to start without
    a configured secret; dev/test may opt into an ephemeral key explicitly. Never ship a built-in
-   default key. It should auto-configure `DataMaskModule` and wrap any `DataSource` bean in a
-   `MaskingDataSource`.
-3. **`datamask-opentelemetry`**, **`datamask-kafka`**.
+   default key. It should auto-configure `DataMaskModule`, wrap any `DataSource` bean in a
+   `MaskingDataSource`, and call `DataMaskKafka.install` so a producer configured by class name has
+   something to find.
+3. **`datamask-opentelemetry`**.
 4. **`datamask-jpa`** — `AttributeConverter`s for pseudonymised columns at rest. Pairs with
    `datamask-jdbc`, which protects what the database *says*; this protects what it *stores*.
 5. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer

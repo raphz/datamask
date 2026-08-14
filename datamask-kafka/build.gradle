@@ -7,4 +7,13 @@ description = 'Kafka integration: masking serializer and producer interceptor fo
 dependencies {
     api project(':datamask-core')
     api libs.kafka.clients
+
+    // The interceptor cannot report a masking failure by throwing — Kafka swallows that and publishes
+    // the record it had before — so it reports through the same facade kafka-clients itself logs to.
+    implementation libs.slf4j.api
+
+    testImplementation libs.testcontainers.kafka
+    // A real SLF4J binding, so the errors this module logs on a fail-closed path can be asserted on
+    // rather than assumed.
+    testImplementation libs.logback.classic
 }
