@@ -95,7 +95,7 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | [`datamask-jackson`](datamask-jackson/README.md) | **implemented** | JSON, masked as the document is written. |
 | [`datamask-jdbc`](datamask-jdbc/README.md) | **implemented** | PostgreSQL error details and bind parameters. |
 | [`datamask-log4j2`](datamask-log4j2/README.md) | **implemented** | Log parameters, message bodies, thread context, exception messages. |
-| `datamask-logback` | planned | The same, through Logback's own extension points. |
+| `datamask-logback` | **implemented** | The same, through Logback's own extension points. |
 | `datamask-opentelemetry` | planned | Span attributes, events and log records before export. |
 | `datamask-kafka` | planned | Serializer and producer interceptor, headers included. |
 | `datamask-jpa` | planned | `AttributeConverter`s for pseudonymised columns at rest. |

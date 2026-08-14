@@ -124,12 +124,19 @@ library, in `ModuleDependencyTest`:
 - `datamask-core` depends on no third-party library and on no integration module.
 - each integration module depends on the core and on **its own** framework only — so no integration
   reaches another's, and none reaches into `infrastructure`.
+- `datamask-processor` depends on the JDK and the annotations only, never on the engine.
 - `everyModuleIsCoveredByARule()` fails if a module has classes but no rule, so implementing one of
   the planned modules cannot silently opt out of the check.
 
-**When you implement a module, add its row to `ModuleDependencyTest.integrations()`** with the
-framework packages it may use. A row is added when the module gets its first class: a row for an empty
-package fails as a rule that matched no classes.
+**Implementing a module includes registering it here, in the same change** — a row in
+`integrations()` with the framework packages it may use, or, for a module that is not a framework
+integration, a rule of its own plus its name in `MODULES_WITH_THEIR_OWN_RULE`. Register it once the
+module has its first class: a row for an empty package fails as a rule that matched no classes.
+`datamask-architecture` has the detail on choosing between the two.
+
+So the checklist for a module that has just gained code is: its `README.md`, the root README's module
+table, the module map in `datamask-overview`, and `ModuleDependencyTest`. Then
+`./gradlew :datamask-architecture-tests:test`.
 
 `application -> infrastructure` is allowed on purpose and is the one exception to inward-only
 dependencies: `DataMask.Builder` and `MaskerRegistry` are the composition root, and wiring the default

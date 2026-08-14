@@ -46,9 +46,24 @@ and each integration on the core plus its own framework — never on another int
 `infrastructure`. `application -> infrastructure` is the one allowed exception: `DataMask.Builder` and
 `MaskerRegistry` are the composition root.
 
-So **implementing a module includes adding its row to `ModuleDependencyTest.integrations()`** with the
-framework packages it may reach for. A test there fails if a module has classes and no rule, so the
-check cannot be skipped by accident.
+So **a module is not implemented until `ModuleDependencyTest` covers it.** Do this in the same change
+as the module's first class — `everyModuleIsCoveredByARule()` compares the packages that actually have
+bytecode against the rules, so the build goes red the moment code lands without a rule. Two ways in,
+depending on what the module is:
+
+- **A framework integration** gets a row in `integrations()`: the module name plus the framework
+  packages its bytecode may reach for. Include packages it only uses through `compileOnly` — the
+  bytecode still refers to them (`datamask-jdbc` and the PostgreSQL driver), and a facade the module
+  writes through counts as its own (`org.slf4j..` for the logging integrations).
+- **Anything that is not a framework integration** gets a rule of its own instead, so its allowance can
+  be tighter than the shared integration one. `datamask-processor` is the example: an annotation
+  processor sees `javax.lang.model` mirrors of `@PII` and never the runtime types, so its rule allows
+  the JDK and `api` only — `domain` and `application` stay out. Add the module to
+  `MODULES_WITH_THEIR_OWN_RULE` when you write the rule, or the coverage test still fails.
+
+Do not add a row before the module has a class: a rule that matches no classes fails on its own.
+Never widen an allowance to make the test pass without saying why in a comment beside it — that
+allowance *is* the design, and the comments there are the record of which dependencies were argued for.
 
 Where new code goes: a new masking algorithm → `infrastructure/masker`. A new identifier to
 recognise → `infrastructure/detect` (add to `Detectors.defaults()`). A new concept in the masking
@@ -255,7 +270,7 @@ interface MaskContext { PiiCategory category(); Sensitivity sensitivity(); MaskS
 
 ## Writing an integration module
 
-The same five decisions come up every time, and the answers are already settled.
+The same decisions come up every time, and the answers are already settled.
 
 **1. Take a `MaskingEngine`.** Two constructors, `DataMask` delegating to `engine()`. Hold nothing
 else; the engine carries the policy, the observer and the sanitiser.
@@ -294,6 +309,11 @@ touches the optional type in a **separate class** so it loads only once the guar
 **6. Write the module's `README.md`.** It is part of finishing the module, not a follow-up. The root
 README stays high level and links to it; module-specific explanation never goes at the root. See the
 `datamask-build` skill for what belongs in it.
+
+**7. Register the module in `ModuleDependencyTest`, in this same change** — a row in `integrations()`
+for a framework integration, a rule of its own for anything else. See *This layering is enforced*
+above. Then run `./gradlew :datamask-architecture-tests:test` before you call the module done; that
+task is the cheapest way to find out you coupled it to something you did not mean to.
 
 ## Deliberate non-goals
 

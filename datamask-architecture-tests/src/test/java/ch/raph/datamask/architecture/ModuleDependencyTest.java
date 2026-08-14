@@ -34,6 +34,7 @@ class ModuleDependencyTest {
     private static final String DOMAIN = ROOT + ".domain..";
     private static final String APPLICATION = ROOT + ".application..";
     private static final String INFRASTRUCTURE = ROOT + ".infrastructure..";
+    private static final String PROCESSOR = ROOT + ".processor..";
 
     /** {@code javax} covers the parts of the platform that never moved out of it, such as {@code javax.crypto}. */
     private static final List<String> JDK = List.of("java..", "javax..");
@@ -41,8 +42,12 @@ class ModuleDependencyTest {
     /** The four packages that make up datamask-api and datamask-core. */
     private static final List<String> CORE = List.of(API, DOMAIN, APPLICATION, INFRASTRUCTURE);
 
-    /** The core packages, named as this test's rules name modules. */
-    private static final List<String> CORE_MODULES = List.of("api", "domain", "application", "infrastructure");
+    /**
+     * The modules that have a rule of their own above instead of a row in {@link #integrations()},
+     * named as this test's rules name modules.
+     */
+    private static final List<String> MODULES_WITH_THEIR_OWN_RULE =
+            List.of("api", "domain", "application", "infrastructure", "processor");
 
     /** Test classes are excluded, so every rule describes the bytecode that actually ships. */
     private static final JavaClasses LIBRARY = new ClassFileImporter()
@@ -62,7 +67,10 @@ class ModuleDependencyTest {
                 // bytecode still refers to it, so it belongs in the allowance. SLF4J is the facade the
                 // statement logger writes through.
                 new Integration("jdbc", List.of("org.postgresql..", "org.slf4j..")),
-                new Integration("log4j2", List.of("org.apache.logging.log4j..")));
+                new Integration("log4j2", List.of("org.apache.logging.log4j..")),
+                // logback-classic and logback-core both ship under ch.qos.logback. SLF4J is where
+                // ILoggingEvent's own marker, key-value and message-formatting types come from.
+                new Integration("logback", List.of("ch.qos.logback..", "org.slf4j..")));
     }
 
     private record Integration(String module, List<String> frameworkPackages) {
@@ -96,6 +104,15 @@ class ModuleDependencyTest {
         onlyDependOn(List.of(DOMAIN, APPLICATION, INFRASTRUCTURE), and(JDK, CORE));
     }
 
+    @Test
+    @DisplayName("the annotation processor reads the annotations and nothing else, so the compile-time "
+            + "check never drags the masking engine onto an application's compile classpath")
+    void processorDependsOnTheAnnotationsOnly() {
+        // Stricter than an integration row would be: the processor works on javax.lang.model mirrors of
+        // @PII, never on the runtime types, so domain and application stay out of the allowance.
+        onlyDependOn(List.of(PROCESSOR), and(JDK, API, PROCESSOR));
+    }
+
     @TestFactory
     @DisplayName("an integration module depends on the core and on its own framework, and on no other "
             + "integration — so an application that wants one of them does not inherit another's framework")
@@ -117,7 +134,8 @@ class ModuleDependencyTest {
             + "the planned modules cannot silently opt it out of the architecture check")
     void everyModuleIsCoveredByARule() {
         List<String> covered = Stream.concat(
-                        CORE_MODULES.stream(), integrations().stream().map(Integration::module))
+                        MODULES_WITH_THEIR_OWN_RULE.stream(),
+                        integrations().stream().map(Integration::module))
                 .toList();
 
         // The segment straight after ch.raph.datamask: `infrastructure.masker` counts as
@@ -130,7 +148,8 @@ class ModuleDependencyTest {
                 .toList();
 
         assertThat(present)
-                .as("a module was implemented without adding it to ModuleDependencyTest.integrations()")
+                .as("a module was implemented without giving it a row in ModuleDependencyTest.integrations() "
+                        + "or a rule of its own")
                 .isSubsetOf(covered);
     }
 

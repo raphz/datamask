@@ -47,7 +47,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-core` | **implemented** | Engine: plan compilation, strategies, detectors, policy, crypto |
 | `datamask-bom` | **implemented** | Platform pinning every module |
 | `datamask-jackson` | **implemented** | Jackson **3**; masks at serialization time |
-| `datamask-logback` | scaffolded, empty | Log arguments, message bodies, MDC, exception messages |
+| `datamask-logback` | **implemented** | Masking appender: log arguments, message bodies, MDC, exception messages |
 | `datamask-log4j2` | **implemented** | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
 | `datamask-kafka` | scaffolded, empty | Masking serializer + producer interceptor, headers included |
@@ -56,7 +56,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
 | `datamask-spring-boot-autoconfigure` | scaffolded, empty | Auto-configuration for everything on the classpath |
 | `datamask-spring-boot-starter` | scaffolded, empty | The single dependency an application adds |
-| `datamask-processor` | scaffolded, empty | Compile-time validation of `@PII` usage |
+| `datamask-processor` | **implemented** | Compile-time validation of `@PII` usage |
 | `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
@@ -64,8 +64,11 @@ production estates run 21. Build on 25, publish for 21.
 
 `datamask-architecture-tests` is not an artifact: it applies `datamask.java-base-conventions` rather
 than `datamask.java-conventions` so it has no route to Central, and both the BOM and the coverage
-aggregation exclude it by name. Implementing a module means adding its row there — see
-`datamask-architecture`.
+aggregation exclude it by name.
+
+**Implementing a module is not finished until `ModuleDependencyTest` knows about it** — the module map
+above and that test are the two places a new module has to be registered, and
+`everyModuleIsCoveredByARule()` fails the build until it is. See `datamask-architecture`.
 
 ## Why `datamask-api` has no dependencies
 
