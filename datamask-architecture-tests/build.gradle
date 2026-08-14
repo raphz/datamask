@@ -1,0 +1,18 @@
+// Deliberately applies the base conventions rather than datamask.java-conventions: this module is
+// verification, not a library, and must never reach Maven Central.
+plugins {
+    id 'datamask.java-base-conventions'
+}
+
+description = 'Architecture tests: the dependency direction between the modules, and the layering inside datamask-core.'
+
+dependencies {
+    // Every module that carries code, so the rules are stated once for the whole library instead of
+    // module by module — and so a new module is checked the moment it has a class in it. Derived
+    // from the project list rather than written out, because a hand-kept list is what goes stale.
+    rootProject.subprojects
+            .findAll { it != project && it.name != 'datamask-bom' }
+            .each { testImplementation project(it.path) }
+
+    testImplementation libs.archunit
+}

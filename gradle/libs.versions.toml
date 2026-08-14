@@ -14,8 +14,10 @@ postgresql = "42.7.11"
 testcontainers = "2.0.5"
 junit = "6.0.3"
 assertj = "3.27.7"
+archunit = "1.4.1"
 spotless = "8.9.0"
 palantirJavaFormat = "2.97.0"
+jacoco = "0.8.13"
 axion = "1.21.3"
 mavenPublish = "0.37.0"
 
@@ -46,6 +48,9 @@ junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+# Plain ArchUnit, driven from ordinary Jupiter tests. The archunit-junit5 engine is not used: it
+# builds against the JUnit 5 platform, and this build is on JUnit 6.
+archunit = { module = "com.tngtech.archunit:archunit", version.ref = "archunit" }
 # Testcontainers 2.x renamed every module with a `testcontainers-` prefix.
 testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
 

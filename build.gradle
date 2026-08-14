@@ -1,8 +1,15 @@
 plugins {
     id 'base'
     id 'com.diffplug.spotless'
+    id 'jacoco'
+    id 'jacoco-report-aggregation'
     alias(libs.plugins.axion.release)
 }
+
+// The library is verified as one artifact, so coverage is measured across every module together.
+// A per-module threshold would fail a module that is three annotations and pass one that is a
+// thousand well-tested lines with an untested integration hanging off it.
+def coverageMinimum = 0.80
 
 // Whether a snapshot cut from a feature branch carries the commit hash. Set
 // datamask.snapshotVersionWithCommitHash=false in gradle.properties to drop it.
@@ -57,6 +64,61 @@ try {
 allprojects {
     group = 'ch.raph.datamask'
     version = resolvedVersion
+}
+
+jacoco {
+    toolVersion = libs.versions.jacoco.get()
+}
+
+// Every module that carries code feeds the aggregate. The BOM is a java-platform, so it has no
+// classes to contribute; datamask-architecture-tests has none of its own either, and coverage is a
+// statement about the library's tests rather than about the rules that police its structure.
+dependencies {
+    rootProject.subprojects
+            .findAll { it.name != 'datamask-bom' && it.name != 'datamask-architecture-tests' }
+            .each { jacocoAggregation project(it.path) }
+}
+
+// The root project has no test suite of its own, so the aggregated report has to be declared
+// explicitly and told which suite of the contributing projects to collect.
+reporting {
+    reports {
+        testCodeCoverageReport(JacocoCoverageReport) {
+            testSuiteName = 'test'
+        }
+    }
+}
+
+def aggregatedCoverageReport = tasks.named('testCodeCoverageReport', JacocoReport)
+
+// Reads the aggregate the report task already assembled — class dirs, sources and exec data —
+// rather than re-deriving them, so the number the gate enforces is the number the report shows.
+tasks.register('coverageVerification', JacocoCoverageVerification) {
+    group = 'verification'
+    description = "Fails the build when aggregated coverage across all modules is below ${(coverageMinimum * 100) as int}%."
+
+    executionData.from(aggregatedCoverageReport.map { it.executionData })
+    classDirectories.from(aggregatedCoverageReport.map { it.classDirectories })
+    sourceDirectories.from(aggregatedCoverageReport.map { it.sourceDirectories })
+
+    violationRules {
+        rule {
+            // INSTRUCTION is the counter least sensitive to formatting and compiler details, so
+            // the threshold means the same thing after a reformat as it did before.
+            limit {
+                counter = 'INSTRUCTION'
+                value = 'COVEREDRATIO'
+                minimum = coverageMinimum
+            }
+        }
+    }
+}
+
+// Coverage joins formatting and tests as one gate rather than a separate opt-in step, so
+// `./gradlew build` is the whole verdict a contributor has to pass. The aggregate needs every
+// module's tests to have run, which is why it hangs off the root project's `check`.
+tasks.named('check') {
+    dependsOn tasks.named('coverageVerification')
 }
 
 // Non-Java formatting is declared once, on the root project only. Declaring it per project would

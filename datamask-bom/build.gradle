@@ -7,8 +7,10 @@ description = 'Bill of materials pinning every DataMask module to a single, cons
 
 dependencies {
     constraints {
+        // The BOM pins what an application can depend on. datamask-architecture-tests is not
+        // published, so pinning it would advertise a coordinate that does not exist on Central.
         rootProject.subprojects
-                .findAll { it.name != 'datamask-bom' }
+                .findAll { it.name != 'datamask-bom' && it.name != 'datamask-architecture-tests' }
                 .each { api "${it.group}:${it.name}:${it.version}" }
     }
 }

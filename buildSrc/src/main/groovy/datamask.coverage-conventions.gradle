@@ -1,0 +1,23 @@
+plugins {
+    id 'jacoco'
+}
+
+def libs = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
+
+// Pinned rather than left to whatever the Gradle distribution happens to bundle, so a wrapper
+// bump can never move the coverage numbers the quality gate is measured against.
+jacoco {
+    toolVersion = libs.findVersion('jacoco').get().requiredVersion
+}
+
+// The gate lives on the root project and reads the aggregate, because a per-module threshold
+// would say nothing useful about a module that is a handful of annotations or an empty
+// placeholder. What each module produces here is its exec data and its own report, on demand.
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.named('test')
+    reports {
+        // XML for anything that reads coverage mechanically, HTML for a human looking at one module.
+        xml.required = true
+        html.required = true
+    }
+}
