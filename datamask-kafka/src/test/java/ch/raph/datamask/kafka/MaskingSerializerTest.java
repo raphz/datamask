@@ -6,7 +6,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.kafka.testdomain.Payments;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.serialization.Serializer;
@@ -161,14 +160,12 @@ class MaskingSerializerTest {
 
     private static final class CountingSerializer implements Serializer<String> {
 
-        private final Map<String, Object> seen = new HashMap<>();
         private int configured;
         private int closed;
 
         @Override
         public void configure(Map<String, ?> configs, boolean isKey) {
             configured++;
-            seen.putAll(configs);
         }
 
         @Override
