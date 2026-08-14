@@ -91,8 +91,8 @@ class MaskingAppenderTest {
         logger.info("crediting {}", IBAN);
 
         assertThat(captured.list).hasSize(2);
-        assertThat(captured.list).allSatisfy(event -> assertThat(event.getFormattedMessage())
-                .doesNotContain(IBAN));
+        assertThat(captured.list)
+                .allSatisfy(event -> assertThat(event.getFormattedMessage()).doesNotContain(IBAN));
     }
 
     @Test

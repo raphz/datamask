@@ -22,8 +22,8 @@ class DebugTest {
                 })
                 .build();
         LoggerContext context = new LoggerContext();
-        LoggingEvent event = new LoggingEvent(
-                DebugTest.class.getName(), context.getLogger("x"), Level.INFO, "started", null, null);
+        LoggingEvent event =
+                new LoggingEvent(DebugTest.class.getName(), context.getLogger("x"), Level.INFO, "started", null, null);
         System.out.println("RESULT: " + new LoggingEventMasker(dataMask).mask(event));
     }
 }

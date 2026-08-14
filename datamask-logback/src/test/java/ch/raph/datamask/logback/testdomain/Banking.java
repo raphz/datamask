@@ -19,11 +19,15 @@ public final class Banking {
     public record Customer(
             @PII Email email,
             @PII(category = PiiCategory.IBAN) String iban,
-            @NoMask(justification = "ISO country code identifies no one") String country) {}
+
+            @NoMask(justification = "ISO country code identifies no one")
+            String country) {}
 
     public record Card(
             @PII(category = PiiCategory.PAN) String number,
-            @PII(category = PiiCategory.CARD_VERIFICATION_VALUE, keep = 3) String cvv) {}
+
+            @PII(category = PiiCategory.CARD_VERIFICATION_VALUE, keep = 3)
+            String cvv) {}
 
     /** A masker that fails, to prove that a broken masker discloses nothing. */
     public static final class BrokenMasker implements Masker {
@@ -36,5 +40,6 @@ public final class Banking {
 
     public record Fragile(@PII(masker = BrokenMasker.class) String secret) {}
 
-    public record Reference(@PII(strategy = MaskStrategy.HASH) String correlationId) {}
+    public record Reference(
+            @PII(strategy = MaskStrategy.HASH) String correlationId) {}
 }

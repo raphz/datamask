@@ -105,10 +105,7 @@ public final class LoggingEventMasker {
         IThrowableProxy maskedThrowable = maskThrowable(throwable, origin + ".exception", 0);
 
         boolean bodyChanged = maskedArguments != arguments || maskedMessage != message;
-        if (!bodyChanged
-                && maskedMdc == mdc
-                && maskedKeyValuePairs == keyValuePairs
-                && maskedThrowable == throwable) {
+        if (!bodyChanged && maskedMdc == mdc && maskedKeyValuePairs == keyValuePairs && maskedThrowable == throwable) {
             return event;
         }
 
@@ -116,7 +113,12 @@ public final class LoggingEventMasker {
         // masked only in its MDC is not formatted twice.
         String formattedMessage = bodyChanged ? format(maskedMessage, maskedArguments) : event.getFormattedMessage();
         return new MaskedLoggingEvent(
-                event, maskedMessage, formattedMessage, maskedArguments, maskedMdc, maskedKeyValuePairs,
+                event,
+                maskedMessage,
+                formattedMessage,
+                maskedArguments,
+                maskedMdc,
+                maskedKeyValuePairs,
                 maskedThrowable);
     }
 

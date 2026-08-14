@@ -103,8 +103,7 @@ class LoggingEventMaskerTest {
         void masksThrowableArgument() {
             // Not in the last position: logback turns a trailing throwable into the event's own
             // throwable proxy, which is a different path.
-            IllegalStateException failure =
-                    new IllegalStateException("Key (email)=(" + EMAIL + ") already exists");
+            IllegalStateException failure = new IllegalStateException("Key (email)=(" + EMAIL + ") already exists");
 
             ILoggingEvent masked = masker.mask(event("rejected {} for {}", failure, "PMT-1"));
 
@@ -202,10 +201,12 @@ class LoggingEventMaskerTest {
         @Test
         @DisplayName("masks the row a constraint violation quoted back, the leak nobody looks for")
         void masksExceptionMessage() {
-            ILoggingEvent masked = masker.mask(
-                    eventWith(new IllegalStateException("Key (email)=(" + EMAIL + ") already exists"), "insert failed"));
+            ILoggingEvent masked = masker.mask(eventWith(
+                    new IllegalStateException("Key (email)=(" + EMAIL + ") already exists"), "insert failed"));
 
-            assertThat(masked.getThrowableProxy().getMessage()).doesNotContain(EMAIL).contains(MASKED_EMAIL);
+            assertThat(masked.getThrowableProxy().getMessage())
+                    .doesNotContain(EMAIL)
+                    .contains(MASKED_EMAIL);
         }
 
         @Test
@@ -213,7 +214,8 @@ class LoggingEventMaskerTest {
         void masksCauseMessage() {
             Throwable cause = new IllegalStateException("Key (iban)=(" + IBAN + ") already exists");
 
-            ILoggingEvent masked = masker.mask(eventWith(new RuntimeException("could not save", cause), "insert failed"));
+            ILoggingEvent masked =
+                    masker.mask(eventWith(new RuntimeException("could not save", cause), "insert failed"));
 
             assertThat(masked.getThrowableProxy().getCause().getMessage())
                     .doesNotContain(IBAN)
@@ -236,11 +238,12 @@ class LoggingEventMaskerTest {
         @Test
         @DisplayName("keeps the type and the frames, which identify code rather than a person")
         void keepsClassNameAndFrames() {
-            ILoggingEvent masked = masker.mask(
-                    eventWith(new IllegalStateException("Key (email)=(" + EMAIL + ")"), "insert failed"));
+            ILoggingEvent masked =
+                    masker.mask(eventWith(new IllegalStateException("Key (email)=(" + EMAIL + ")"), "insert failed"));
 
             assertThat(masked.getThrowableProxy().getClassName()).isEqualTo(IllegalStateException.class.getName());
-            assertThat(masked.getThrowableProxy().getStackTraceElementProxyArray()).isNotEmpty();
+            assertThat(masked.getThrowableProxy().getStackTraceElementProxyArray())
+                    .isNotEmpty();
         }
 
         @Test
@@ -342,7 +345,8 @@ class LoggingEventMaskerTest {
         }
 
         @Test
-        @DisplayName("withholds the message rather than throwing under FailureMode.THROW, since a log call must not fail")
+        @DisplayName(
+                "withholds the message rather than throwing under FailureMode.THROW, since a log call must not fail")
         void withholdsUnderThrow() {
             DataMask throwing = DataMask.builder()
                     .secret(SECRET)
@@ -350,7 +354,8 @@ class LoggingEventMaskerTest {
                     .build();
             MDC.put("customer", EMAIL);
 
-            ILoggingEvent masked = new LoggingEventMasker(throwing).mask(event("checking {}", new Banking.Fragile(IBAN)));
+            ILoggingEvent masked =
+                    new LoggingEventMasker(throwing).mask(event("checking {}", new Banking.Fragile(IBAN)));
 
             assertThat(masked.getFormattedMessage()).doesNotContain(IBAN).contains("withheld");
             assertThat(masked.getMDCPropertyMap()).isEmpty();
@@ -385,8 +390,9 @@ class LoggingEventMaskerTest {
 
             new LoggingEventMasker(throwing).mask(event("checking {}", new Banking.Fragile(IBAN)));
 
-            assertThat(recorder.failures).isNotEmpty().allSatisfy(path -> assertThat(path)
-                    .doesNotContain(IBAN));
+            assertThat(recorder.failures)
+                    .isNotEmpty()
+                    .allSatisfy(path -> assertThat(path).doesNotContain(IBAN));
         }
     }
 
