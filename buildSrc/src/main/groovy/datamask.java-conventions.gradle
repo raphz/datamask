@@ -1,47 +1,6 @@
+// A published Java module: the shared Java baseline plus the route to Maven Central. The split
+// exists so datamask-architecture-tests can take the baseline without becoming an artifact.
 plugins {
-    id 'java-library'
-    id 'datamask.spotless-conventions'
+    id 'datamask.java-base-conventions'
     id 'datamask.publishing-conventions'
-}
-
-def libs = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
-
-java {
-    // Built with the JDK the developer already has (25); `options.release` below is what
-    // actually gates the bytecode level, so no second toolchain needs provisioning.
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
-    }
-    // The sources and javadoc jars Central requires are registered by
-    // datamask.publishing-conventions, so they are not declared a second time here.
-}
-
-tasks.withType(JavaCompile).configureEach {
-    options.encoding = 'UTF-8'
-    // Java 21 is the published baseline: it is what most banking estates run today.
-    options.release = 21
-    // Required so the reflective plan compiler can recover constructor parameter names
-    // for non-record beans, and so Spring can bind @ConfigurationProperties constructors.
-    options.compilerArgs << '-parameters'
-    options.compilerArgs << '-Xlint:all,-serial,-processing'
-}
-
-tasks.withType(Javadoc).configureEach {
-    options.encoding = 'UTF-8'
-    options.addStringOption('Xdoclint:none', '-quiet')
-}
-
-dependencies {
-    testImplementation platform(libs.findLibrary('junit-bom').get())
-    testImplementation libs.findLibrary('junit-jupiter').get()
-    testImplementation libs.findLibrary('assertj-core').get()
-    testRuntimeOnly libs.findLibrary('junit-platform-launcher').get()
-}
-
-tasks.named('test') {
-    useJUnitPlatform()
-    testLogging {
-        events 'failed'
-        exceptionFormat 'full'
-    }
 }

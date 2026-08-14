@@ -39,6 +39,17 @@ An integration module keeps a **flat package** and exposes as little as possible
 types an application touches are public, the rest is package-private. It depends on
 `datamask-core` and on its own framework, never on another integration module.
 
+**This layering is enforced, not just documented.** `datamask-architecture-tests` holds every module
+on its test classpath and fails the build when the direction drifts: `datamask-api` on nothing but the
+JDK, `domain` on the annotations only, `datamask-core` on no third-party library and no integration,
+and each integration on the core plus its own framework — never on another integration, and never into
+`infrastructure`. `application -> infrastructure` is the one allowed exception: `DataMask.Builder` and
+`MaskerRegistry` are the composition root.
+
+So **implementing a module includes adding its row to `ModuleDependencyTest.integrations()`** with the
+framework packages it may reach for. A test there fails if a module has classes and no rule, so the
+check cannot be skipped by accident.
+
 Where new code goes: a new masking algorithm → `infrastructure/masker`. A new identifier to
 recognise → `infrastructure/detect` (add to `Detectors.defaults()`). A new concept in the masking
 vocabulary → `domain`. A new integration → its own module depending on `datamask-core`.

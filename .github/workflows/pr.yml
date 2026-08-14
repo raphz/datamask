@@ -30,10 +30,17 @@ jobs:
       - name: Set up the build
         uses: ./.github/actions/setup-build
 
-      # `build` runs spotlessCheck and the tests, so formatting and behaviour are one gate
-      # rather than two separate ones a contributor can pass halfway.
+      # `build` runs spotlessCheck, the tests, the architecture rules and the 80% coverage gate,
+      # so formatting, behaviour, structure and coverage are one gate rather than four a
+      # contributor can pass part of.
       - name: Build
         run: ./gradlew build --info
+
+      # Runs even when the build failed, because failing the coverage gate is exactly when
+      # the report is worth reading.
+      - name: Publish the coverage report
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/coverage-report
 
       - name: Upload test reports
         if: failure()

@@ -29,8 +29,13 @@ jobs:
       - name: Set up the build
         uses: ./.github/actions/setup-build
 
+      # `build` also enforces the architecture rules and the 80% coverage gate.
       - name: Build
         run: ./gradlew build --info
+
+      - name: Publish the coverage report
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/coverage-report
 
       - name: Upload test reports
         if: failure()

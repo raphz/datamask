@@ -8,18 +8,27 @@ description: DataMask's build, code formatting and versioning — Gradle multi-p
 ## Layout
 
 ```
-build.gradle                 root: axion versioning, misc Spotless formats
+build.gradle                 root: axion versioning, misc Spotless formats, aggregated coverage + gate
 settings.gradle              module includes; mavenCentral only
+gradle.properties            sequential execution, build cache, daemon JVM args
 gradle/libs.versions.toml    the single source of every version
 buildSrc/
   build.gradle               pulls the Spotless plugin onto the build classpath
   settings.gradle            re-exposes ../gradle/libs.versions.toml as `libs`
   src/main/groovy/
-    datamask.java-conventions.gradle      applied by every Java module
-    datamask.spotless-conventions.gradle  Java formatting, applied via java-conventions
+    datamask.java-base-conventions.gradle  the Java baseline: toolchain, compiler args, JUnit
+    datamask.java-conventions.gradle       java-base + publishing; applied by every published module
+    datamask.spotless-conventions.gradle   Java formatting, applied via java-base-conventions
+    datamask.coverage-conventions.gradle   JaCoCo per module, applied via java-base-conventions
+    datamask.publishing-conventions.gradle Maven Central, via java-conventions and the BOM
 datamask-*/build.gradle      one line of plugin, a description, dependencies
 datamask-*/README.md         the module's own documentation (see below)
+datamask-architecture-tests/ verification only, never published (see below)
 ```
+
+The `java-base` / `java-conventions` split exists so `datamask-architecture-tests` can take the Java
+baseline without becoming a published artifact. A module that ships applies
+`datamask.java-conventions`; only a verification module applies the base directly.
 
 Groovy DSL throughout. Convention plugins reach the catalog with
 `extensions.getByType(VersionCatalogsExtension).named('libs')` — precompiled script plugins cannot
@@ -62,12 +71,82 @@ Every Java module gets `withSourcesJar()`, `withJavadocJar()` and a `maven-publi
 All in `gradle/libs.versions.toml`, **deliberately aligned to what Spring Boot 4.1.0 manages**, so
 the starter is drop-in compatible with a Boot application's dependency management. Current pins:
 Jackson 3.1.4, Logback 1.5.34, Log4j2 2.25.4, Kafka 4.2.1, OpenTelemetry 1.62.0, Micrometer 1.17.0,
-PostgreSQL driver 42.7.11, JUnit 6.0.3, AssertJ 3.27.7.
+PostgreSQL driver 42.7.11, JUnit 6.0.3, AssertJ 3.27.7, ArchUnit 1.4.1, JaCoCo 0.8.13.
+
+JaCoCo is pinned rather than left to whatever the Gradle distribution bundles, so a wrapper bump
+cannot move the numbers the coverage gate measures against. ArchUnit is the plain `archunit`
+artifact, not `archunit-junit5`: that engine builds against the JUnit 5 platform and this build is on
+JUnit 6, so the rules are driven from ordinary Jupiter tests instead.
 
 When bumping Spring Boot, re-derive the rest from its `spring-boot-dependencies` POM rather than
 picking latest independently.
 
 Do not add Mockito. The tests do not need it and have stayed readable without it.
+
+## Coverage — JaCoCo, aggregated, gated at 80%
+
+Coverage is measured **across every module at once**, not module by module: a per-module threshold
+would fail a module that is three annotations and pass one that is a thousand tested lines with an
+untested integration hanging off it.
+
+- `datamask.coverage-conventions.gradle` applies `jacoco` to each Java module and turns on the XML
+  and HTML reports for its own `jacocoTestReport`, which is available on demand per module.
+- The root project applies Gradle's `jacoco-report-aggregation`. Every module except the BOM and
+  `datamask-architecture-tests` feeds the `jacocoAggregation` configuration, so the aggregate follows
+  the project list rather than a hand-kept one.
+- `coverageVerification` (root, `JacocoCoverageVerification`) enforces **80% INSTRUCTION coverage** on
+  that same aggregate, reading the report task's own class dirs, sources and exec data so the number
+  enforced is the number the report shows. INSTRUCTION is the counter least sensitive to formatting,
+  so the threshold means the same thing after a reformat.
+- Root `check` depends on it, which puts coverage in `./gradlew build` alongside formatting and tests.
+
+```bash
+./gradlew testCodeCoverageReport   # build/reports/jacoco/testCodeCoverageReport/html/index.html
+./gradlew coverageVerification     # the gate on its own
+```
+
+The threshold lives in one place: `def coverageMinimum = 0.80` at the top of the root `build.gradle`.
+At the time it was added the aggregate stood at 82.0% instruction / 80.9% line, so **the margin is
+thin** — a new module landing with no tests will fail the gate, which is the intent.
+
+In CI both workflows publish the aggregate through `.github/actions/coverage-report`: the counters go
+into the run summary and the HTML report is uploaded as an artifact, with `if: ${{ !cancelled() }}` so
+a run that fails the gate still explains itself.
+
+## Architecture tests — `datamask-architecture-tests`
+
+Not published, and it applies `datamask.java-base-conventions` precisely so it cannot be. It holds
+every other module on its **test** classpath and states the dependency rules once for the whole
+library, in `ModuleDependencyTest`:
+
+- `datamask-api` depends on nothing but the JDK.
+- `domain` sees only the annotations — never `application`, never `infrastructure`.
+- `datamask-core` depends on no third-party library and on no integration module.
+- each integration module depends on the core and on **its own** framework only — so no integration
+  reaches another's, and none reaches into `infrastructure`.
+- `everyModuleIsCoveredByARule()` fails if a module has classes but no rule, so implementing one of
+  the planned modules cannot silently opt out of the check.
+
+**When you implement a module, add its row to `ModuleDependencyTest.integrations()`** with the
+framework packages it may use. A row is added when the module gets its first class: a row for an empty
+package fails as a rule that matched no classes.
+
+`application -> infrastructure` is allowed on purpose and is the one exception to inward-only
+dependencies: `DataMask.Builder` and `MaskerRegistry` are the composition root, and wiring the default
+maskers, detectors, key and vault is their job.
+
+## Execution — sequential, on purpose
+
+`gradle.properties` sets `org.gradle.parallel=false`. **Spotless does not support parallel
+execution.** With it on, roughly half of the `clean build` runs failed, either with a
+`NoClassDefFoundError` thrown from inside a formatter or with Gradle unable to fingerprint spotless's
+own `lineEndingsPolicy` input. Both are open upstream bugs with no fix (diffplug/spotless#2850,
+diffplug/spotless#2391), and dropping a formatting step does not avoid them — removing `cleanthat()`
+was measured and made no difference. Do not re-enable it; a build that is green half the time is worth
+less than the few seconds it would save on fourteen small modules.
+
+The build cache (`org.gradle.caching=true`) is on and is where the real speed comes from; in CI
+`gradle/actions/setup-gradle` restores it.
 
 ## Formatting — Spotless + palantir-java-format
 
@@ -131,10 +210,14 @@ Two Groovy-specific gotchas already solved in `build.gradle`, do not "clean them
 ## Commands
 
 ```bash
-./gradlew build                       # compile + spotlessCheck + test + jars
+./gradlew build                       # compile + spotlessCheck + test + architecture rules
+                                      #   + 80% coverage gate + jars
 ./gradlew :datamask-core:test         # one module
 ./gradlew spotlessApply               # before committing
 ./gradlew clean build                 # from scratch
+./gradlew testCodeCoverageReport      # aggregated coverage, HTML + XML
+./gradlew coverageVerification        # the 80% gate on its own
+./gradlew :datamask-architecture-tests:test   # the module dependency rules on their own
 ```
 
 ## Testing conventions

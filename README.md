@@ -106,9 +106,24 @@ Each module documents itself. This page stays deliberately short; the detail liv
 `datamask-api` is deliberately dependency-free so a domain module can declare `@PII` without taking
 on the engine, a reflection library, or a logging framework.
 
+That, and the rest of the dependency direction between the modules, is enforced rather than reviewed:
+[`datamask-architecture-tests`](datamask-architecture-tests/README.md) holds every module on its test
+classpath and fails the build when it drifts. It is not in the table because it is not published.
+
 ## Requirements
 
 Java 21 or later. Built and tested on JDK 25.
+
+## Building
+
+```bash
+./gradlew build
+```
+
+One command is the whole verdict: it compiles, checks formatting, runs the tests, checks the
+architecture rules, and enforces **80% aggregated coverage** across every module. `./gradlew
+spotlessApply` fixes formatting; the coverage report lands in
+`build/reports/jacoco/testCodeCoverageReport/html/index.html`.
 
 ## Releasing
 

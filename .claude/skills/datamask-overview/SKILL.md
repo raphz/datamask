@@ -48,7 +48,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-bom` | **implemented** | Platform pinning every module |
 | `datamask-jackson` | **implemented** | Jackson **3**; masks at serialization time |
 | `datamask-logback` | scaffolded, empty | Log arguments, message bodies, MDC, exception messages |
-| `datamask-log4j2` | scaffolded, empty | Rewrite policy + pattern converter |
+| `datamask-log4j2` | **implemented** | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
 | `datamask-kafka` | scaffolded, empty | Masking serializer + producer interceptor, headers included |
 | `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
@@ -57,9 +57,15 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-spring-boot-autoconfigure` | scaffolded, empty | Auto-configuration for everything on the classpath |
 | `datamask-spring-boot-starter` | scaffolded, empty | The single dependency an application adds |
 | `datamask-processor` | scaffolded, empty | Compile-time validation of `@PII` usage |
+| `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
 `src/` yet.
+
+`datamask-architecture-tests` is not an artifact: it applies `datamask.java-base-conventions` rather
+than `datamask.java-conventions` so it has no route to Central, and both the BOM and the coverage
+aggregation exclude it by name. Implementing a module means adding its row there — see
+`datamask-architecture`.
 
 ## Why `datamask-api` has no dependencies
 

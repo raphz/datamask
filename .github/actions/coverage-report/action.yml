@@ -1,0 +1,28 @@
+name: Publish the coverage report
+description: >
+  Puts the aggregated JaCoCo totals into the run summary and the HTML report into an
+  artifact. Used by every workflow that verifies the build, so a run that fails the 80%
+  gate explains itself without anyone having to reproduce it locally.
+
+inputs:
+  artifact-name:
+    description: Name of the artifact the HTML report is uploaded under.
+    required: false
+    default: coverage-report
+
+runs:
+  using: composite
+  steps:
+    - name: Summarise coverage
+      shell: bash
+      run: python3 .github/scripts/coverage-summary.py
+
+    # The HTML report is the one that says which lines are uncovered, which is what someone
+    # who has just been failed by the gate actually needs.
+    - name: Upload the coverage report
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: build/reports/jacoco/testCodeCoverageReport
+        retention-days: 7
+        if-no-files-found: ignore
