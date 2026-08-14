@@ -29,7 +29,15 @@ ch.raph.datamask.infrastructure   (adapters)
     detect/   RegexDetector, Detectors (the default set), Checksums
     crypto/   MaskKey, HmacPseudonymizer
     vault/    InMemoryTokenVault
+
+ch.raph.datamask.<framework>       (one flat package per integration module)
+    jdbc/     MaskingDataSource, SqlExceptionSanitizer (public); SqlErrorText,
+              PostgresErrorSanitizer, JdbcMasking, JdbcProxies, BoundParameters (internal)
 ```
+
+An integration module keeps a **flat package** and exposes as little as possible: the one or two
+types an application touches are public, the rest is package-private. It depends on
+`datamask-core` and on its own framework, never on another integration module.
 
 Where new code goes: a new masking algorithm → `infrastructure/masker`. A new identifier to
 recognise → `infrastructure/detect` (add to `Detectors.defaults()`). A new concept in the masking
@@ -122,6 +130,159 @@ no-change short-circuit.
 `MaskContextFactory` exists so the engine and the text sanitiser produce contexts backed by the
 *same* key and vault — otherwise a pseudonym in a masked field would not match the same value
 spotted inside a log message.
+
+## API surface reference
+
+Every signature an integration module needs. **This is here so you do not have to open
+`datamask-core` to write one.** Verified against the source; if something contradicts the code, the
+code wins and this table is stale.
+
+### `DataMask` — `ch.raph.datamask.application`
+
+```java
+static Builder builder()
+static DataMask withDefaults()          // ephemeral key; tests and local development only
+<T> T mask(T value)                     // masked copy, same type
+String maskText(CharSequence text)      // mask PII inside free text
+List<PiiFinding> scan(CharSequence)     // report without changing
+String pseudonymize(String value)       // same surrogate HASH would produce
+Optional<String> detokenize(String token)
+MaskingEngine engine()                  // what an integration module actually holds
+MaskingPolicy policy()
+TokenVault vault()
+```
+
+`Builder`: `secret(String)`, `key(MaskKey)`, `policy(MaskingPolicy)`, `vault(TokenVault)`,
+`observer(MaskingObserver)`, `overrides(PolicyOverrides)`, `detectors(List<PiiDetector>)`,
+`detector(PiiDetector)`, `masker(MaskStrategy, Masker)`, `masker(Masker)`, `build()`.
+
+### `MaskingEngine` — the integration entry point
+
+```java
+Object mask(Object value)
+String maskText(CharSequence text, String path)   // returns the SAME String when nothing matched
+Object maskDeclared(Object value, PiiDescriptor descriptor, Class<?> declaredType, String path)
+MaskingPolicy policy()
+TextSanitizer sanitizer()
+MaskPlanCompiler compiler()
+MaskingObserver observer()
+```
+
+An integration module takes a `MaskingEngine`, not a `DataMask` — offer both constructors and have
+the `DataMask` one delegate to `dataMask.engine()`. That is what `DataMaskModule` and
+`MaskingDataSource` both do.
+
+`maskDeclared` is the one to reach for when the integration already knows what a value is; `maskText`
+is for when it does not and the detectors have to decide.
+
+### `TextSanitizer`
+
+```java
+String sanitize(CharSequence text, String path)   // same instance when nothing matched
+List<PiiFinding> scan(CharSequence text)          // document order, overlaps removed
+Optional<PiiCategory> classify(CharSequence text) // Some only when ONE detector matches end to end
+```
+
+`classify` is what an integration uses to decide what a whole value is — a bind parameter, a span
+attribute, a Kafka header. `sanitize` is for text with prose around the PII.
+
+### Domain types
+
+```java
+record MaskingPolicy(Sensitivity threshold, FailureMode failureMode, String redactionPlaceholder,
+                     int maxDepth, int maxCollectionElements,
+                     boolean scanUnannotatedText, boolean maskMapKeys)
+    static strict() / relaxed(); applies(Sensitivity);
+    withThreshold / withFailureMode / withScanUnannotatedText / withRedactionPlaceholder
+
+record PiiDescriptor(PiiCategory category, Sensitivity sensitivity, MaskStrategy strategy,
+                     int keep, char padding, String replacement,
+                     Class<? extends Masker> maskerType, String purpose)
+    static from(PII) / redacting(PiiCategory)     // `redacting` forces REDACT
+    // compact constructor forces keep = 0 for category.neverPartiallyReveal()
+
+record PiiFinding(int start, int end, PiiCategory category, String detector, boolean confident)
+    length(); overlaps(PiiFinding)
+
+record PolicyOverrides(Map<String, PiiDescriptor> byMember, Map<String, PiiDescriptor> byType)
+    static none(); forMember(Class<?>, String); forType(Class<?>); isEmpty()
+
+sealed interface MaskAction { Mask(PiiDescriptor) | Descend() | Keep() | Drop() }
+
+interface PiiDetector      { String name(); List<PiiFinding> detect(CharSequence); }   // NOT functional
+interface Pseudonymizer    { String pseudonymize(String); }
+interface TokenVault       { String tokenize(String, PiiCategory); Optional<String> detokenize(String); }
+interface MaskContextFactory { MaskContext create(PiiDescriptor, MaskStrategy, String path, Class<?>); }
+
+enum FailureMode { REDACT, THROW, PASS_THROUGH }
+enum Sensitivity { ... atLeast(Sensitivity) }
+```
+
+`MaskingObserver` — all four methods `default`, so implement only what you need:
+`onMasked(String path, PiiCategory, MaskStrategy)`,
+`onUnannotatedPii(String path, PiiCategory, String detector)`, `onFailure(String path, Throwable)`,
+`onDepthLimitExceeded(String path)`. `MaskingObserver.NOOP` is the default.
+
+### `datamask-api` — what a custom masker sees
+
+```java
+interface Masker { Object mask(Object value, MaskContext context);
+                   default boolean supports(Class<?> type) { return true; } }
+
+interface MaskContext { PiiCategory category(); Sensitivity sensitivity(); MaskStrategy strategy();
+                        int keep(); char padding(); String replacement(); String path();
+                        Class<?> declaredType(); String redactionPlaceholder();
+                        String pseudonymize(String); String tokenize(String); }
+```
+
+`@PII` attributes: `strategy` (AUTO), `category` (UNSPECIFIED), `sensitivity` (HIGH), `masker`
+(`Masker.class`), `keep` (-1 = category default), `padding` (`'*'`), `replacement` (`""`), `purpose`
+(`""`). `@NoMask` requires a `justification`.
+
+`MaskKey`: `ofSecret(String)` (rejects under 16 bytes), `of(byte[])`, `ephemeral()`, `spec()`,
+`isEphemeral()`.
+
+## Writing an integration module
+
+The same five decisions come up every time, and the answers are already settled.
+
+**1. Take a `MaskingEngine`.** Two constructors, `DataMask` delegating to `engine()`. Hold nothing
+else; the engine carries the policy, the observer and the sanitiser.
+
+**2. Map `AUTO` and `SCAN` to `REDACT` whenever you build a `PiiDescriptor` yourself.** Neither
+resolves to anything at an integration boundary, and `SCAN` would re-enter the scanner and not
+terminate. `TextSanitizer.maskSpan` and `JdbcMasking.maskText` both do this; copy it.
+
+```java
+MaskStrategy strategy = category.defaultStrategy();
+if (strategy == MaskStrategy.AUTO || strategy == MaskStrategy.SCAN) {
+    strategy = MaskStrategy.REDACT;
+}
+```
+
+**3. Pass a path, and make it say where the value came from.** `"jdbc:error/detail"`,
+`"jdbc:param/2"`, `"kafka:header/x"`. The path is what reaches the observer, and
+`onUnannotatedPii(path, ...)` is only actionable if the path identifies the site.
+
+**4. Preserve the no-change short-circuit.** `maskText` and `sanitize` return the *same instance*
+when nothing matched. Integrations should do the same at their own boundary — return the original
+object when there was nothing to remove. `SqlExceptionSanitizer` returns the very same exception, so
+an ordinary error reaches the application exactly as the driver threw it.
+
+**5. Fail closed at the boundary too.** Catch your own failures, report `observer.onFailure(path, e)`
+and emit `policy().redactionPlaceholder()` — never the value you failed to mask. Honour
+`FailureMode.THROW` if a test would want the bug surfaced.
+
+For a value of unknown provenance, `PiiCategory.UNSPECIFIED` with `MaskStrategy.REDACT` is the
+fail-closed pair; that is what a masked database row value is reported as.
+
+Optional third-party dependencies use `compileOnly` plus a `Class.forName` guard, with the code that
+touches the optional type in a **separate class** so it loads only once the guard has passed —
+`SqlExceptionSanitizer` / `PostgresErrorSanitizer` is the worked example.
+
+**6. Write the module's `README.md`.** It is part of finishing the module, not a follow-up. The root
+README stays high level and links to it; module-specific explanation never goes at the root. See the
+`datamask-build` skill for what belongs in it.
 
 ## Deliberate non-goals
 

@@ -46,12 +46,12 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-api` | **implemented** | Annotations + SPI. **Zero dependencies, and it must stay that way** |
 | `datamask-core` | **implemented** | Engine: plan compilation, strategies, detectors, policy, crypto |
 | `datamask-bom` | **implemented** | Platform pinning every module |
-| `datamask-jackson` | scaffolded, empty | Jackson **3** module; mask at serialization time |
+| `datamask-jackson` | **implemented** | Jackson **3**; masks at serialization time |
 | `datamask-logback` | scaffolded, empty | Log arguments, message bodies, MDC, exception messages |
 | `datamask-log4j2` | scaffolded, empty | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
 | `datamask-kafka` | scaffolded, empty | Masking serializer + producer interceptor, headers included |
-| `datamask-jdbc` | scaffolded, empty | Bind parameters **and PostgreSQL error details** |
+| `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
 | `datamask-jpa` | scaffolded, empty | `AttributeConverter`s for pseudonymised columns at rest |
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
 | `datamask-spring-boot-autoconfigure` | scaffolded, empty | Auto-configuration for everything on the classpath |
@@ -71,29 +71,40 @@ Custom `Masker` implementations therefore also compile against `datamask-api` al
 `MaskContext` handed to them exposes `pseudonymize` and `tokenize` precisely so they never need
 `datamask-core`.
 
+## Documentation layout
+
+**The root `README.md` is high level only** — what DataMask is, why, basic usage, the module table
+with links, requirements. Each module explains itself in `datamask-<name>/README.md`, and writing it
+is part of implementing the module. Core concepts live in `datamask-core/README.md`, annotations and
+the SPI in `datamask-api/README.md`. See `datamask-build` for what a module README contains.
+
 ## Roadmap — next modules, in the intended order
 
-1. **`datamask-jackson`** — Jackson 3 API surface is already verified: `JacksonModule` (was
-   `Module`), `ValueSerializer` (was `JsonSerializer`), `SerializationContext` (was
-   `SerializerProvider`), `ValueSerializerModifier` (was `BeanSerializerModifier`), all under
-   `tools.jackson.databind.*`. Annotations stay `com.fasterxml.jackson.annotation.*`. Masking here
-   happens at serialization time, so the raw string is never materialised.
-2. **`datamask-logback`** + **`datamask-log4j2`**.
-3. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
+Done: **`datamask-jackson`** (masks at serialization time) and **`datamask-jdbc`** (PostgreSQL error
+details plus bind parameters). What remains:
+
+1. **`datamask-logback`** + **`datamask-log4j2`**.
+2. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
    `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
    **Key-policy decision already made: fail fast.** `HASH`/`TOKENIZE` must refuse to start without
    a configured secret; dev/test may opt into an ephemeral key explicitly. Never ship a built-in
-   default key.
-4. **`datamask-opentelemetry`**, **`datamask-kafka`**.
-5. **`datamask-jdbc`** — the high-value feature is sanitising PostgreSQL error details. A unique
-   constraint violation echoes row values verbatim: `Detail: Key (email)=(john@x.com) already
-   exists.` That is a real, common leak.
-6. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
+   default key. It should auto-configure `DataMaskModule` and wrap any `DataSource` bean in a
+   `MaskingDataSource`.
+3. **`datamask-opentelemetry`**, **`datamask-kafka`**.
+4. **`datamask-jpa`** — `AttributeConverter`s for pseudonymised columns at rest. Pairs with
+   `datamask-jdbc`, which protects what the database *says*; this protects what it *stores*.
+5. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
    locally.
-7. **`datamask-processor`**.
+6. **`datamask-processor`**.
 
 A benchmark module (JMH) was considered and deliberately deferred — worth adding once an
 integration puts the engine on a logging hot path.
+
+Two things the implemented integrations established that the remaining ones should copy: an
+integration takes a `MaskingEngine` (with a `DataMask` convenience constructor), and it returns the
+**original object unchanged** when there was nothing to mask. The API surface reference and the
+five-step recipe are in `datamask-architecture`, so writing a new integration should not need a
+reading pass over `datamask-core`.
 
 ## Related skills
 
