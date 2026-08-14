@@ -33,7 +33,18 @@ class LoggingEventMaskerTest {
     private static final String CARD = "4111111111111111";
     private static final String LOGGER = "ch.example.PaymentService";
 
-    private static final LoggerContext CONTEXT = new LoggerContext();
+    private static final LoggerContext CONTEXT = context();
+
+    /**
+     * A hand-built context has no MDC adapter — the slf4j provider installs one on the default
+     * context only. Sharing the adapter {@link MDC} writes to is what makes {@code MDC.put} in a test
+     * visible to the events built below, exactly as it is at runtime.
+     */
+    private static LoggerContext context() {
+        LoggerContext context = new LoggerContext();
+        context.setMDCAdapter(MDC.getMDCAdapter());
+        return context;
+    }
 
     private final LoggingEventMasker masker =
             new LoggingEventMasker(DataMask.builder().secret(SECRET).build());

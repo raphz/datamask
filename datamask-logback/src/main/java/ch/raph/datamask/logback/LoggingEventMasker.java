@@ -138,7 +138,10 @@ public final class LoggingEventMasker {
             Object argument = arguments[i];
             Object safe = maskArgument(argument, origin + ".arg" + i);
             if (safe != argument && masked == null) {
-                masked = arguments.clone();
+                // Not clone(): a caller may have passed a typed array as the varargs, and a masked
+                // value of another type would be an ArrayStoreException in a copy of that type.
+                masked = new Object[arguments.length];
+                System.arraycopy(arguments, 0, masked, 0, arguments.length);
             }
             if (masked != null) {
                 masked[i] = safe;
@@ -248,7 +251,10 @@ public final class LoggingEventMasker {
         for (int i = 0; i < suppressed.length; i++) {
             IThrowableProxy safe = maskThrowable(suppressed[i], path + ".suppressed" + i, depth + 1);
             if (safe != suppressed[i] && masked == null) {
-                masked = suppressed.clone();
+                // Not clone(): logback hands out a ThrowableProxy[], and storing a masked proxy in it
+                // would be an ArrayStoreException. The copy is declared to hold the interface.
+                masked = new IThrowableProxy[suppressed.length];
+                System.arraycopy(suppressed, 0, masked, 0, suppressed.length);
             }
             if (masked != null) {
                 masked[i] = safe;

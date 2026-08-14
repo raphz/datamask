@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.util.LogbackMDCAdapter;
 import ch.qos.logback.core.read.ListAppender;
 import ch.raph.datamask.application.DataMask;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +28,9 @@ class MaskingAppenderTest {
     void setUp() {
         context = new LoggerContext();
         context.setName("test");
+        // The slf4j provider installs an adapter on the default context only, and an event reads its
+        // MDC from the context it was built by.
+        context.setMDCAdapter(new LogbackMDCAdapter());
         captured = new ListAppender<>();
         captured.setName("CAPTURED");
         captured.setContext(context);
