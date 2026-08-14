@@ -1,0 +1,56 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Main builds are never cancelled: each one is the record of whether that commit was green,
+# and a superseded run leaves a gap in that record.
+concurrency:
+  group: main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Full history and tags: axion resolves the release-candidate version from them.
+          fetch-depth: 0
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      - name: Build
+        run: ./gradlew build
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: "**/build/reports/tests/test"
+          retention-days: 7
+
+      # Off main, axion stamps builds as `-rc-<shortRevision>`. Keeping the jars makes a
+      # candidate consumable before anyone commits to cutting a release from it.
+      - name: Upload release-candidate jars
+        uses: actions/upload-artifact@v7
+        with:
+          name: jars-${{ github.sha }}
+          path: "**/build/libs/*.jar"
+          retention-days: 14
+
+      - name: Report the candidate version
+        run: |
+          set -euo pipefail
+          VERSION=$(./gradlew -q currentVersion -Prelease.quiet)
+          echo "### Built \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"

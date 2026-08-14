@@ -1,0 +1,44 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+# A new push to the branch supersedes the run already in flight; only the latest commit's
+# verdict is worth paying for.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Axion derives the version from the tags and the branch position, and a shallow
+          # clone has neither. The root build deliberately disables axion's own checks so a
+          # detached CI checkout with a merge commit still resolves a version.
+          fetch-depth: 0
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      # `build` runs spotlessCheck and the tests, so formatting and behaviour are one gate
+      # rather than two separate ones a contributor can pass halfway.
+      - name: Build
+        run: ./gradlew build
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: "**/build/reports/tests/test"
+          retention-days: 7

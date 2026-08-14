@@ -15,6 +15,7 @@ assertj = "3.27.7"
 spotless = "8.9.0"
 palantirJavaFormat = "2.97.0"
 axion = "1.21.3"
+mavenPublish = "0.37.0"
 
 [plugins]
 axion-release = { id = "pl.allegro.tech.build.axion-release", version.ref = "axion" }
@@ -45,3 +46,4 @@ assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 
 # Consumed by buildSrc, not by any published module.
 spotless-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless" }
+maven-publish-plugin = { module = "com.vanniktech:gradle-maven-publish-plugin", version.ref = "mavenPublish" }

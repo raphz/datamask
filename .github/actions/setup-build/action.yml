@@ -1,0 +1,23 @@
+name: Set up the DataMask build
+description: >
+  Installs the JDK the Gradle toolchain asks for and configures Gradle with caching and
+  wrapper validation. Every workflow uses this, so the build environment is defined once.
+
+runs:
+  using: composite
+  steps:
+    # datamask.java-conventions.gradle requests a 25 toolchain. Installing it here means
+    # Gradle never has to auto-provision a JDK in the middle of a build.
+    - name: Set up JDK 25
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 25
+
+    # Caching is read-only off the default branch and written from main, which is the
+    # action's own default and the right way round. Wrapper validation is on: a tampered
+    # gradle-wrapper.jar executes arbitrary code with the workflow's token.
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        validate-wrappers: true

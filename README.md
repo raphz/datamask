@@ -22,6 +22,44 @@ Customer safe = dataMask.mask(customer);
 The original object is untouched. The masked copy is the same type, so it drops straight into a
 log statement, a span attribute, a Kafka record or a model prompt.
 
+## Why I built this
+
+Twenty-five years of building systems for banks and fintechs taught me one thing about personal
+data: **it almost never escapes through the front door.** The database is encrypted at rest, the
+traffic is on TLS, the access paths are reviewed and audited. What leaks is the *diagnostics* —
+the log line, the stack trace, the span attribute, the message on the queue, the support export,
+and now the prompt sent to a model provider. Nobody designs those. They accumulate.
+
+The usual answer is to bolt masking on downstream: a set of regexes in the log appender, a
+scrubber in the aggregator, a redaction rule in the collector. I have written that code more than
+once, and it always decays the same way. It works the day it ships, and then somebody adds a
+field, generates a DTO, or lets a record's `toString()` reach an exception message — and the data
+walks straight past a filter that was never told about it. Downstream scrubbing has to *guess*
+what a string is. Only the domain model knows.
+
+The leaks I have met repeatedly are unglamorous. A unique-constraint violation whose PostgreSQL
+detail echoes the offending row verbatim. A customer who typed their own IBAN into the payment
+reference, which is a free-text field and is logged as one. A correlation header carrying a
+customer identifier through every hop. A `toString()` written for a debugging session in 2014 and
+never revisited. None of these are exotic; each one is an afternoon of someone's carelessness and
+a very long conversation with the compliance team afterwards.
+
+That conversation is why the cost is asymmetric. Once an IBAN is in a third-party aggregator's
+index it is retained, replicated across regions, and inside somebody else's backups. Remediation
+is expensive, and proving it was complete is harder than doing it. Under GDPR and PCI-DSS the
+finding does not care that the leak was accidental.
+
+So DataMask inverts the order. You declare what a value **is** exactly once, on the domain model —
+the only place in the system that actually knows — and every downstream channel inherits that
+truth instead of re-deriving it. Every error path produces less information than it started with,
+because in this library a bug does not throw an exception, it silently writes a customer's account
+number somewhere it cannot be recalled from. Swiss identifiers (AVS/AHV numbers, Swiss IBANs) are
+first-class because that is the estate I know best, and because a library that is vague about the
+local formats is a library that gets switched off.
+
+I wanted the compliance officer reading the code and the SRE reading the masked log to both be
+satisfied by the same annotation. That is the whole design.
+
 ## Why the defaults are what they are
 
 **`HASH` is keyed, not a bare digest.** An unkeyed SHA-256 of an IBAN or a phone number is
@@ -154,6 +192,11 @@ on the engine, a reflection library, or a logging framework.
 ## Requirements
 
 Java 21 or later. Built and tested on JDK 25.
+
+## Releasing
+
+Published to Maven Central by the **Release** workflow. Setup and procedure are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Licence
 
