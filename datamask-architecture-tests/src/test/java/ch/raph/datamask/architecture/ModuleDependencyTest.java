@@ -35,6 +35,7 @@ class ModuleDependencyTest {
     private static final String APPLICATION = ROOT + ".application..";
     private static final String INFRASTRUCTURE = ROOT + ".infrastructure..";
     private static final String PROCESSOR = ROOT + ".processor..";
+    private static final String SPRING = ROOT + ".spring..";
 
     /** {@code javax} covers the parts of the platform that never moved out of it, such as {@code javax.crypto}. */
     private static final List<String> JDK = List.of("java..", "javax..");
@@ -47,7 +48,7 @@ class ModuleDependencyTest {
      * named as this test's rules name modules.
      */
     private static final List<String> MODULES_WITH_THEIR_OWN_RULE =
-            List.of("api", "domain", "application", "infrastructure", "processor");
+            List.of("api", "domain", "application", "infrastructure", "processor", "spring");
 
     /** Test classes are excluded, so every rule describes the bytecode that actually ships. */
     private static final JavaClasses LIBRARY = new ClassFileImporter()
@@ -114,6 +115,29 @@ class ModuleDependencyTest {
         // Stricter than an integration row would be: the processor works on javax.lang.model mirrors of
         // @PII, never on the runtime types, so domain and application stay out of the allowance.
         onlyDependOn(List.of(PROCESSOR), and(JDK, API, PROCESSOR));
+    }
+
+    @Test
+    @DisplayName("the Spring auto-configuration is the one module allowed to see several integrations at "
+            + "once, because deciding what exists is exactly what a composition root is for")
+    void springAutoConfigurationSeesTheIntegrationsItWires() {
+        // Wider than an integration row on purpose, and the width is the design: this module wires the
+        // engine into whichever integrations an application put on its classpath, so it has to name
+        // them. Two limits still hold. It stays out of `infrastructure` — it configures masking, it does
+        // not implement any — which is why the key is set through DataMask.Builder.secret(String) and a
+        // MaskKey never appears here. And an integration is still forbidden from reaching back: nothing
+        // in this list may be imported the other way round.
+        List<String> integrationPackages =
+                integrations().stream().map(Integration::basePackage).toList();
+        List<String> allowed = and(
+                and(JDK, API, DOMAIN, APPLICATION, SPRING),
+                and(
+                        integrationPackages,
+                        // Boot itself, the SLF4J facade the startup warnings go through, Micrometer for
+                        // the observer, and Jackson for the module type the Jackson auto-configuration
+                        // declares as a bean.
+                        List.of("org.springframework..", "org.slf4j..", "io.micrometer..", "tools.jackson..")));
+        onlyDependOn(List.of(SPRING), allowed);
     }
 
     @TestFactory

@@ -8,23 +8,25 @@ dependencies {
     api project(':datamask-core')
     api libs.spring.boot.autoconfigure
     implementation libs.spring.boot
+    implementation libs.slf4j.api
 
     // Every integration is optional: auto-configuration activates only for what the
-    // application actually put on its classpath.
+    // application actually put on its classpath. Only the modules that carry code are listed;
+    // opentelemetry, jpa and ai earn their line here once they have something to wire.
     compileOnly project(':datamask-jackson')
     compileOnly project(':datamask-logback')
-    compileOnly project(':datamask-opentelemetry')
-    compileOnly project(':datamask-kafka')
+    compileOnly project(':datamask-log4j2')
     compileOnly project(':datamask-jdbc')
-    compileOnly project(':datamask-ai')
+    compileOnly project(':datamask-kafka')
     compileOnly libs.micrometer.core
-    compileOnly libs.spring.boot.actuator
 
     annotationProcessor libs.spring.boot.configuration.processor
 
     testImplementation project(':datamask-jackson')
-    testImplementation project(':datamask-ai')
+    testImplementation project(':datamask-logback')
+    testImplementation project(':datamask-log4j2')
     testImplementation project(':datamask-jdbc')
+    testImplementation project(':datamask-kafka')
     testImplementation libs.micrometer.core
-    testImplementation libs.spring.boot.actuator
+    testImplementation libs.spring.boot.test
 }

@@ -42,6 +42,9 @@ spring-boot = { module = "org.springframework.boot:spring-boot", version.ref = "
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure", version.ref = "springBoot" }
 spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor", version.ref = "springBoot" }
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "springBoot" }
+# ApplicationContextRunner lives here. Taken on its own rather than through spring-boot-starter-test,
+# which would drag Mockito onto the test classpath of a build that deliberately does without it.
+spring-boot-test = { module = "org.springframework.boot:spring-boot-test", version.ref = "springBoot" }
 spring-boot-actuator = { module = "org.springframework.boot:spring-boot-actuator", version.ref = "springBoot" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }

@@ -1,0 +1,10 @@
+# The DataMask itself. Everything below is conditional on this one having been built.
+ch.raph.datamask.spring.DataMaskAutoConfiguration
+# Ordered before the core one, so the observer exists as a bean when the engine collects them.
+ch.raph.datamask.spring.DataMaskMetricsAutoConfiguration
+# One per integration module, each conditional on that module being on the classpath.
+ch.raph.datamask.spring.DataMaskJacksonAutoConfiguration
+ch.raph.datamask.spring.DataMaskJdbcAutoConfiguration
+ch.raph.datamask.spring.DataMaskKafkaAutoConfiguration
+ch.raph.datamask.spring.DataMaskLog4j2AutoConfiguration
+ch.raph.datamask.spring.DataMaskLogbackAutoConfiguration

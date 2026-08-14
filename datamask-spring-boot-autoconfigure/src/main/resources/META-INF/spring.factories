@@ -1,0 +1,4 @@
+# A missing secret is the one configuration mistake this library refuses to work around, so it is
+# worth a startup message that says what to set rather than a bean-creation stack trace.
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+ch.raph.datamask.spring.MissingMaskSecretFailureAnalyzer
