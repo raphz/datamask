@@ -47,7 +47,7 @@ jobs:
       # Nothing is tagged or uploaded until the same gate a pull request has to pass is
       # green here.
       - name: Verify
-        run: ./gradlew build
+        run: ./gradlew build --info
 
       - name: Identify the tagger
         run: |

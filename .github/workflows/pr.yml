@@ -33,7 +33,7 @@ jobs:
       # `build` runs spotlessCheck and the tests, so formatting and behaviour are one gate
       # rather than two separate ones a contributor can pass halfway.
       - name: Build
-        run: ./gradlew build
+        run: ./gradlew build --info
 
       - name: Upload test reports
         if: failure()
