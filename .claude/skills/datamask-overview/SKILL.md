@@ -54,8 +54,8 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
 | `datamask-jpa` | scaffolded, empty | `AttributeConverter`s for pseudonymised columns at rest |
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
-| `datamask-spring-boot-autoconfigure` | scaffolded, empty | Auto-configuration for everything on the classpath |
-| `datamask-spring-boot-starter` | scaffolded, empty | The single dependency an application adds |
+| `datamask-spring-boot-autoconfigure` | **implemented** | One `DataMask` from `datamask.*`, wired into every module on the classpath |
+| `datamask-spring-boot-starter` | **implemented** | Core plus the auto-configuration; integrations stay opt-in |
 | `datamask-processor` | **implemented** | Compile-time validation of `@PII` usage |
 | `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
@@ -90,22 +90,25 @@ the SPI in `datamask-api/README.md`. See `datamask-build` for what a module READ
 ## Roadmap — next modules, in the intended order
 
 Done: **`datamask-jackson`** (masks at serialization time), **`datamask-jdbc`** (PostgreSQL error
-details plus bind parameters), **`datamask-logback`** + **`datamask-log4j2`**, and
-**`datamask-kafka`** (masking serializer, producer interceptor, headers). What remains:
+details plus bind parameters), **`datamask-logback`** + **`datamask-log4j2`**, **`datamask-kafka`**
+(masking serializer, producer interceptor, headers), and **`datamask-spring-boot-autoconfigure`** +
+**starter**. What remains:
 
-1. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
-   `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
-   **Key-policy decision already made: fail fast.** `HASH`/`TOKENIZE` must refuse to start without
-   a configured secret; dev/test may opt into an ephemeral key explicitly. Never ship a built-in
-   default key. It should auto-configure `DataMaskModule`, wrap any `DataSource` bean in a
-   `MaskingDataSource`, and call `DataMaskKafka.install` so a producer configured by class name has
-   something to find.
-3. **`datamask-opentelemetry`**.
-4. **`datamask-jpa`** — `AttributeConverter`s for pseudonymised columns at rest. Pairs with
+1. **`datamask-opentelemetry`**.
+2. **`datamask-jpa`** — `AttributeConverter`s for pseudonymised columns at rest. Pairs with
    `datamask-jdbc`, which protects what the database *says*; this protects what it *stores*.
-5. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
+3. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
    locally.
-6. **`datamask-processor`**.
+4. **`datamask-processor`**.
+
+**A new integration module is not finished until the Spring auto-configuration knows about it**, the
+same way it is not finished until `ModuleDependencyTest` does. That means a
+`DataMask<Name>AutoConfiguration` in `ch.raph.datamask.spring`, a line in the module's
+`AutoConfiguration.imports`, a `compileOnly` and a `testImplementation` on it in the
+autoconfigure module's `build.gradle`, and a `datamask.<name>.enabled` component in
+`DataMaskProperties`. The two shapes already exist to copy: a bean the framework collects
+(`DataMaskJacksonAutoConfiguration`), or an installer bean filling in a static hand-off for a plugin
+the framework builds by class name (`LogbackDataMaskInstaller`, `KafkaDataMaskInstaller`).
 
 A benchmark module (JMH) was considered and deliberately deferred — worth adding once an
 integration puts the engine on a logging hot path.

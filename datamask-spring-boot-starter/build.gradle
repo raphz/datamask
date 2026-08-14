@@ -7,6 +7,13 @@ description = 'The one dependency a Spring Boot application adds to get DataMask
 dependencies {
     api project(':datamask-core')
     api project(':datamask-spring-boot-autoconfigure')
+
+    // No integration module is pulled in here, and that is deliberate. datamask-logback and
+    // datamask-log4j2 carry mutually exclusive logging backends, so a starter that brought one
+    // would break every application that chose the other; datamask-jackson brings jackson-databind,
+    // which a non-web application does not otherwise have. The auto-configuration activates each of
+    // them on sight, so an application adds the line for the channel it actually uses and gets the
+    // wiring for free. See datamask-spring-boot-starter/README.md.
 }
 
 // A starter carries no code of its own.

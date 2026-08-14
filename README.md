@@ -100,7 +100,8 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | `datamask-opentelemetry` | planned | Span attributes, events and log records before export. |
 | `datamask-jpa` | planned | `AttributeConverter`s for pseudonymised columns at rest. |
 | `datamask-ai` | planned | Prompt sanitisation with reversible placeholders. |
-| `datamask-spring-boot-starter` | planned | The single dependency an application adds. |
+| [`datamask-spring-boot-starter`](datamask-spring-boot-starter/README.md) | **implemented** | The dependency a Spring Boot application adds. |
+| [`datamask-spring-boot-autoconfigure`](datamask-spring-boot-autoconfigure/README.md) | **implemented** | One `DataMask` from properties, wired into every module on the classpath. |
 | [`datamask-processor`](datamask-processor/README.md) | **implemented** | Compile-time validation of `@PII` usage. |
 
 `datamask-api` is deliberately dependency-free so a domain module can declare `@PII` without taking
