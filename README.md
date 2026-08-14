@@ -170,6 +170,30 @@ For a format the library does not know:
 A `Masker` receives a `MaskContext` giving it the engine's keyed pseudonymisation and tokenisation,
 so custom maskers depend only on the dependency-free `datamask-api` module.
 
+## Masking JSON on the way out
+
+`datamask-jackson` masks while the document is written, so no masked copy of the object graph is
+built and no call site changes:
+
+```java
+ObjectMapper mapper = JsonMapper.builder()
+        .addModule(new DataMaskModule(dataMask))
+        .build();
+```
+
+Two things are hooked. Declared PII is handled from the compiled plan — `@PII`, `@NoMask` and any
+policy override have already collapsed into one decision per property, taken once when the
+serializer for the type is built rather than on every write. Everything else goes through the
+detectors, including strings inside lists, map values and the root of the document, so an IBAN that
+ended up in a free-text field is still caught. That second half follows
+`MaskingPolicy#scanUnannotatedText` and disappears entirely when it is off.
+
+A property declaring both `@PII` and `@JsonSerialize(using = ...)` is masked. A custom renderer is
+not a way around the annotation.
+
+Deserialization is deliberately untouched: this protects what leaves the process, and masking on the
+way in would destroy data the application is meant to store.
+
 ## Modules
 
 | Module | Status |
@@ -177,7 +201,7 @@ so custom maskers depend only on the dependency-free `datamask-api` module.
 | `datamask-api` | **implemented** — annotations and SPI, zero dependencies |
 | `datamask-core` | **implemented** — engine, strategies, detectors, policy |
 | `datamask-bom` | **implemented** |
-| `datamask-jackson` | planned — mask at serialization time |
+| `datamask-jackson` | **implemented** — Jackson 3, masks at serialization time |
 | `datamask-logback` / `datamask-log4j2` | planned |
 | `datamask-opentelemetry` | planned — span attributes and log records |
 | `datamask-kafka` | planned — serializer and interceptors |
