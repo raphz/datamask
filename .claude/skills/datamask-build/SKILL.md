@@ -124,7 +124,7 @@ library, in `ModuleDependencyTest`:
 - `datamask-core` depends on no third-party library and on no integration module.
 - each integration module depends on the core and on **its own** framework only — so no integration
   reaches another's, and none reaches into `infrastructure`.
-- `datamask-processor` depends on the JDK and the annotations only, never on the engine.
+- both processor modules depend on the JDK and the annotations only, never on the engine.
 - `everyModuleIsCoveredByARule()` fails if a module has classes but no rule, so implementing one of
   the planned modules cannot silently opt out of the check.
 

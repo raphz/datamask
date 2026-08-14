@@ -56,7 +56,8 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
 | `datamask-spring-boot-autoconfigure` | **implemented** | One `DataMask` from `datamask.*`, wired into every module on the classpath |
 | `datamask-spring-boot-starter` | **implemented** | Core plus the auto-configuration; integrations stay opt-in |
-| `datamask-processor` | **implemented** | Compile-time validation of `@PII` usage |
+| `datamask-check-processor` | **implemented** | Compile-time validation of `@PII` usage |
+| `datamask-build-processor` | **implemented** | Mask plans generated at compile time; `GeneratedMaskPlanCompiler` in core reads them |
 | `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
@@ -91,15 +92,15 @@ the SPI in `datamask-api/README.md`. See `datamask-build` for what a module READ
 
 Done: **`datamask-jackson`** (masks at serialization time), **`datamask-jdbc`** (PostgreSQL error
 details plus bind parameters), **`datamask-logback`** + **`datamask-log4j2`**, **`datamask-kafka`**
-(masking serializer, producer interceptor, headers), and **`datamask-spring-boot-autoconfigure`** +
-**starter**. What remains:
+(masking serializer, producer interceptor, headers), **`datamask-spring-boot-autoconfigure`** +
+**starter**, and both processors — **`datamask-check-processor`** (validates `@PII` usage) and
+**`datamask-build-processor`** (generates the mask plans). What remains:
 
 1. **`datamask-opentelemetry`**.
 2. **`datamask-jpa`** — `AttributeConverter`s for pseudonymised columns at rest. Pairs with
    `datamask-jdbc`, which protects what the database *says*; this protects what it *stores*.
 3. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
    locally.
-4. **`datamask-processor`**.
 
 **A new integration module is not finished until the Spring auto-configuration knows about it**, the
 same way it is not finished until `ModuleDependencyTest` does. That means a

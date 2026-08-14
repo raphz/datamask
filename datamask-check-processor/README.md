@@ -1,4 +1,4 @@
-# datamask-processor
+# datamask-check-processor
 
 **Turns the `@PII` mistakes that only surface in production — or never surface at all — into
 compile errors.**
@@ -6,7 +6,7 @@ compile errors.**
 ```groovy
 dependencies {
     implementation 'ch.raph.datamask:datamask-api'
-    annotationProcessor 'ch.raph.datamask:datamask-processor'
+    annotationProcessor 'ch.raph.datamask:datamask-check-processor'
 }
 ```
 
@@ -90,8 +90,10 @@ be read and fixed in order rather than one at a time. It is not a setting to lea
 
 ## Deliberate non-goals
 
-- **No generated code.** `MaskPlanCompiler` is a port so that a build-time plan compiler can slot in
-  later for GraalVM native images; this module validates, and validating is all it does.
+- **No generated code.** That is
+  [`datamask-build-processor`](../datamask-build-processor/README.md), which writes the masking plans
+  this module only ever validates. The two read the same annotations, neither claims them, and they
+  are meant to sit on the annotation processor path together.
 - **No "does this type carry PII" analysis.** Same reason the engine has none.
 - **No check on where `@PII` is placed.** The engine reads fields and record components, so an
   annotation on a constructor parameter does nothing — but javac copies a record component's

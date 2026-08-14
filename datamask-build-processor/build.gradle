@@ -1,0 +1,17 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Annotation processor that generates mask plans at build time, replacing runtime reflection.'
+
+dependencies {
+    // The annotations, and nothing else — the same rule the check processor follows. The generated
+    // code names datamask-core types, but this processor only writes those names as text, so the
+    // masking engine never reaches an application's annotation processor path. GeneratedSourceTest
+    // is what keeps the names honest: it compiles what the processor emits against the real core.
+    implementation project(':datamask-api')
+
+    // The equivalence test runs both compilers over the same domain and compares, so it needs the
+    // engine and a domain to point it at.
+    testImplementation project(':datamask-core')
+}

@@ -102,7 +102,8 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | `datamask-ai` | planned | Prompt sanitisation with reversible placeholders. |
 | [`datamask-spring-boot-starter`](datamask-spring-boot-starter/README.md) | **implemented** | The dependency a Spring Boot application adds. |
 | [`datamask-spring-boot-autoconfigure`](datamask-spring-boot-autoconfigure/README.md) | **implemented** | One `DataMask` from properties, wired into every module on the classpath. |
-| [`datamask-processor`](datamask-processor/README.md) | **implemented** | Compile-time validation of `@PII` usage. |
+| [`datamask-check-processor`](datamask-check-processor/README.md) | **implemented** | Compile-time validation of `@PII` usage. |
+| [`datamask-build-processor`](datamask-build-processor/README.md) | **implemented** | Masking plans generated at compile time, so nothing is reflected at runtime. |
 
 `datamask-api` is deliberately dependency-free so a domain module can declare `@PII` without taking
 on the engine, a reflection library, or a logging framework.

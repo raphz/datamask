@@ -1,0 +1,5 @@
+# Aggregating, because the one META-INF/services file has to list every generated plan and Filer
+# cannot append to a resource. An isolating processor would be handed only the changed sources on an
+# incremental build and would rewrite that file with a fraction of the plans in it — leaving the rest
+# unreachable, and their types quietly back on the reflective path.
+ch.raph.datamask.processor.plan.MaskPlanProcessor,AGGREGATING
