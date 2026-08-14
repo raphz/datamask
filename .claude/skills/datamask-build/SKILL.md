@@ -18,11 +18,35 @@ buildSrc/
     datamask.java-conventions.gradle      applied by every Java module
     datamask.spotless-conventions.gradle  Java formatting, applied via java-conventions
 datamask-*/build.gradle      one line of plugin, a description, dependencies
+datamask-*/README.md         the module's own documentation (see below)
 ```
 
 Groovy DSL throughout. Convention plugins reach the catalog with
 `extensions.getByType(VersionCatalogsExtension).named('libs')` — precompiled script plugins cannot
 use the generated `libs` accessor directly.
+
+## Documentation — one README per module
+
+**The root `README.md` stays high level: what DataMask is, why it exists, basic usage, the module
+table, requirements. It does not explain individual modules.** Every module documents itself in its
+own `datamask-<name>/README.md`, and the root table links to each one.
+
+So when a module is implemented, **writing its README is part of the work**, not a follow-up:
+
+- Open with one bold sentence saying what the module protects, then the three-line usage snippet.
+- Then the detail that has nowhere else to live: the leak it closes, what survives and what is
+  removed, the decisions that would otherwise look arbitrary, and the deliberate non-goals.
+- Anything in the root README that is specific to one module belongs in that module's README instead.
+
+Core concepts follow the same rule rather than accumulating at the root: strategies, categories,
+policy and the supported types live in `datamask-core/README.md`; the annotations, `@NoMask` and
+custom `Masker`s live in `datamask-api/README.md`.
+
+Also update, in the same change: the root README's module table (status and one-line description) and
+the module map in the `datamask-overview` skill.
+
+Markdown is formatted by Spotless too (`**/*.md` on the root project), so `./gradlew spotlessApply`
+covers a README.
 
 ## Java baseline
 

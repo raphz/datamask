@@ -8,4 +8,15 @@ description = 'JDBC integration: redacts bind parameters and, critically, Postgr
 dependencies {
     api project(':datamask-core')
     implementation libs.slf4j.api
+
+    // Optional on purpose. When the driver is present the PostgreSQL path rebuilds a genuine
+    // ServerErrorMessage from its structured parts, which is locale-independent; without it the
+    // module still sanitises every SQLException as text, so it stays usable with any driver.
+    compileOnly libs.postgresql
+
+    testImplementation libs.postgresql
+    testImplementation libs.testcontainers.postgresql
+    // Statement logging is only worth having if the log line is asserted on, and asserting on it
+    // needs a real SLF4J binding to capture.
+    testImplementation libs.logback.classic
 }
