@@ -8,4 +8,18 @@ dependencies {
     api project(':datamask-core')
     api libs.log4j2.core
     implementation libs.log4j2.api
+
+    // Log4j2's own annotation processor writes Log4j2Plugins.dat into this jar at build time, so the
+    // plugins are found by the descriptor every configuration already reads. Without it a deployment
+    // would need `packages="ch.raph.datamask.log4j2"` on its Configuration element — a classpath scan
+    // that is deprecated, silent when it fails, and would leave masking switched off with no error.
+    annotationProcessor libs.log4j2.core
+}
+
+tasks.named('compileJava') {
+    // Both processors in log4j-core run; the GraalVM one refuses to start without these coordinates.
+    options.compilerArgs += [
+        '-Alog4j.graalvm.groupId=ch.raph.datamask',
+        '-Alog4j.graalvm.artifactId=datamask-log4j2',
+    ]
 }
