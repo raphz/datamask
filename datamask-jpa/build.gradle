@@ -1,0 +1,11 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'JPA integration: AttributeConverters for pseudonymised and tokenised columns at rest.'
+
+dependencies {
+    api project(':datamask-core')
+    compileOnly libs.jakarta.persistence
+    testImplementation libs.jakarta.persistence
+}

@@ -1,0 +1,13 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'The one dependency a Spring Boot application adds to get DataMask wired everywhere.'
+
+dependencies {
+    api project(':datamask-core')
+    api project(':datamask-spring-boot-autoconfigure')
+}
+
+// A starter carries no code of its own.
+tasks.named('javadoc') { enabled = false }

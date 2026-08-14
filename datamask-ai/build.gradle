@@ -1,0 +1,9 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'LLM prompt sanitisation with reversible placeholders, so model responses can be re-identified locally.'
+
+dependencies {
+    api project(':datamask-core')
+}

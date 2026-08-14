@@ -1,0 +1,22 @@
+rootProject.name = 'datamask'
+
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+    }
+}
+
+include 'datamask-bom'
+include 'datamask-api'
+include 'datamask-core'
+include 'datamask-processor'
+include 'datamask-jackson'
+include 'datamask-logback'
+include 'datamask-log4j2'
+include 'datamask-opentelemetry'
+include 'datamask-kafka'
+include 'datamask-jdbc'
+include 'datamask-jpa'
+include 'datamask-ai'
+include 'datamask-spring-boot-autoconfigure'
+include 'datamask-spring-boot-starter'

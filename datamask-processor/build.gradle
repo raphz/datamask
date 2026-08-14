@@ -1,0 +1,9 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Annotation processor that validates @PII usage at compile time.'
+
+dependencies {
+    implementation project(':datamask-api')
+}

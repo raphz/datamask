@@ -1,0 +1,26 @@
+plugins {
+    id 'java-platform'
+    id 'maven-publish'
+}
+
+description = 'Bill of materials pinning every DataMask module to a single, consistent version.'
+
+dependencies {
+    constraints {
+        rootProject.subprojects
+                .findAll { it.name != 'datamask-bom' }
+                .each { api "${it.group}:${it.name}:${it.version}" }
+    }
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.javaPlatform
+            pom {
+                name = 'datamask-bom'
+                description = project.description
+            }
+        }
+    }
+}

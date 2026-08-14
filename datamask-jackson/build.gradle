@@ -1,0 +1,10 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Jackson 3 module that masks at serialization time, so a raw PII string is never materialised.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.jackson.databind
+}

@@ -1,0 +1,16 @@
+plugins {
+    id 'com.diffplug.spotless'
+}
+
+def libs = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
+
+spotless {
+    java {
+        cleanthat()
+        removeUnusedImports()
+        formatAnnotations()
+        palantirJavaFormat(libs.findVersion('palantirJavaFormat').get().requiredVersion).style('PALANTIR')
+        endWithNewline()
+        toggleOffOn()
+    }
+}

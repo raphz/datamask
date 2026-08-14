@@ -1,0 +1,30 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Spring Boot 4.1 auto-configuration for DataMask and every integration on the classpath.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.spring.boot.autoconfigure
+    implementation libs.spring.boot
+
+    // Every integration is optional: auto-configuration activates only for what the
+    // application actually put on its classpath.
+    compileOnly project(':datamask-jackson')
+    compileOnly project(':datamask-logback')
+    compileOnly project(':datamask-opentelemetry')
+    compileOnly project(':datamask-kafka')
+    compileOnly project(':datamask-jdbc')
+    compileOnly project(':datamask-ai')
+    compileOnly libs.micrometer.core
+    compileOnly libs.spring.boot.actuator
+
+    annotationProcessor libs.spring.boot.configuration.processor
+
+    testImplementation project(':datamask-jackson')
+    testImplementation project(':datamask-ai')
+    testImplementation project(':datamask-jdbc')
+    testImplementation libs.micrometer.core
+    testImplementation libs.spring.boot.actuator
+}

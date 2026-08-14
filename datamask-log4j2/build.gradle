@@ -1,0 +1,11 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Log4j2 integration: a rewrite policy and pattern converter that mask before the appender runs.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.log4j2.core
+    implementation libs.log4j2.api
+}

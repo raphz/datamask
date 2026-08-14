@@ -1,0 +1,10 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Kafka integration: masking serializer and producer interceptor for records and headers.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.kafka.clients
+}

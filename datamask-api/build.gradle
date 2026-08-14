@@ -1,0 +1,6 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Annotations and SPI contracts. Deliberately dependency-free so domain modules ' +
+        'can declare @PII without dragging in the masking engine.'

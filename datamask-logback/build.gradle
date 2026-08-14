@@ -1,0 +1,11 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'Logback integration: masking of log arguments, message bodies, MDC and exception messages.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.logback.classic
+    implementation libs.slf4j.api
+}

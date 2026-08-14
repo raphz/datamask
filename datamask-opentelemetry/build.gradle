@@ -1,0 +1,11 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'OpenTelemetry integration: sanitises span attributes, events and log records before export.'
+
+dependencies {
+    api project(':datamask-core')
+    api libs.opentelemetry.sdk
+    implementation libs.opentelemetry.api
+}

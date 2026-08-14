@@ -1,0 +1,9 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'The masking engine: plan compilation, built-in strategies, PII detectors and policy.'
+
+dependencies {
+    api project(':datamask-api')
+}

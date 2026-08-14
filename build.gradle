@@ -1,0 +1,72 @@
+plugins {
+    id 'base'
+    id 'com.diffplug.spotless'
+    alias(libs.plugins.axion.release)
+}
+
+// Whether a snapshot cut from a feature branch carries the commit hash. Set
+// datamask.snapshotVersionWithCommitHash=false in gradle.properties to drop it.
+def snapshotVersionWithCommitHash = !project.hasProperty('datamask.snapshotVersionWithCommitHash')
+        || Boolean.parseBoolean(project.property('datamask.snapshotVersionWithCommitHash').toString())
+
+scmVersion {
+    // Only main produces release candidates. Everything else is an alpha, so a feature-branch
+    // build can never be mistaken for one in a repository.
+    snapshotCreator { version, position ->
+        if (position.branch != 'main') {
+            snapshotVersionWithCommitHash ? '-alpha-' + position.shortRevision : '-alpha'
+        } else {
+            '-rc-' + position.shortRevision
+        }
+    }
+    versionCreator 'versionWithBranch'
+    versionIncrementer 'incrementMinor'
+
+    repository {
+        pushTagsOnly = true
+    }
+
+    // The version must be derivable in CI from a shallow, detached checkout with local changes,
+    // so none of these guards apply. Release gating belongs in the pipeline, not in versioning.
+    checks {
+        uncommittedChanges = false
+        aheadOfRemote = false
+        snapshotDependencies = false
+    }
+
+    tag {
+        // Coerced explicitly: this is a Property holding a SAM type, not a Property holding a Closure.
+        initialVersion = { rules, position -> '0.1.0' } as
+                pl.allegro.tech.build.axion.release.domain.properties.TagProperties.InitialVersionSupplier
+    }
+}
+
+// A repository with no commits has no HEAD, so axion has nothing to derive a version from. That is
+// only ever true before the very first commit; falling back keeps the build configurable until then.
+def resolvedVersion
+try {
+    resolvedVersion = scmVersion.version
+} catch (pl.allegro.tech.build.axion.release.domain.scm.ScmException scmProblem) {
+    if (!(scmProblem.cause instanceof org.eclipse.jgit.api.errors.NoHeadException)) {
+        throw scmProblem
+    }
+    resolvedVersion = '0.1.0-SNAPSHOT'
+    logger.lifecycle('DataMask: repository has no commits yet, using {}', resolvedVersion)
+}
+
+allprojects {
+    group = 'ch.raph.datamask'
+    version = resolvedVersion
+}
+
+// Non-Java formatting is declared once, on the root project only. Declaring it per project would
+// make every subproject's glob reach back up and format the same files several times over.
+spotless {
+    format 'misc', {
+        target '**/*.gradle', '**/*.md', '**/.gitignore'
+        targetExclude '**/build/**', '**/.gradle/**', '**/.idea/**'
+        trimTrailingWhitespace()
+        leadingTabsToSpaces()
+        endWithNewline()
+    }
+}

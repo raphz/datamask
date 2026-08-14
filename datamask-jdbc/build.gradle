@@ -1,0 +1,11 @@
+plugins {
+    id 'datamask.java-conventions'
+}
+
+description = 'JDBC integration: redacts bind parameters and, critically, PostgreSQL error details ' +
+        'such as unique-constraint violations which echo row values into logs verbatim.'
+
+dependencies {
+    api project(':datamask-core')
+    implementation libs.slf4j.api
+}
