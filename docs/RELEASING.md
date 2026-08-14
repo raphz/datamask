@@ -1,12 +1,16 @@
 # Releasing DataMask
 
-Releases are cut by the **Release** workflow (`.github/workflows/release.yml`), run manually from
-the Actions tab against `main`. It verifies the build, tags the commit, publishes every module to
-Maven Central, and only then pushes the tag and creates the GitHub release.
+Releases are cut by **publishing a GitHub release**. That fires the Release workflow
+(`.github/workflows/release.yml`), which checks out the released tag, verifies the build and
+publishes every module to Maven Central.
 
-The ordering is deliberate: the tag is created **locally**, and pushed only after Central has
-accepted the bundle. A rejected upload therefore leaves nothing published behind, and the run can
-simply be repeated.
+The version is decided in exactly one place — the tag on the release you publish. Axion reads it
+back out, and the workflow refuses to continue if the tag does not resolve to a clean release
+version, so a mislabelled artifact cannot reach Central.
+
+Because the release is already public when the workflow starts, a failed upload would otherwise
+leave a release advertising a version that never arrived on Central. The workflow puts the release
+back into **draft** if publishing fails; fix the cause and publish it again to re-run.
 
 ## One-time setup
 
@@ -76,27 +80,40 @@ If the exporting keyring ever holds more than one secret key, add
 
 ## Cutting a release
 
-**Actions → Release → Run workflow**, on `main`:
+First create the tag on `main`, at the commit being released:
 
-- **increment** — `patch`, `minor` (default) or `major`. Maps to axion's
-  `incrementPatch` / `incrementMinor` / `incrementMajor`.
-- **version** — an exact version such as `1.0.0`. Overrides the increment. Use it for the first
-  `1.0.0` and for anything else the incrementer would not arrive at on its own.
+```bash
+git checkout main && git pull
+./gradlew createRelease -Prelease.versionIncrementer=incrementMinor   # or incrementPatch / incrementMajor
+# or, for an exact version:
+./gradlew createRelease -Prelease.forceVersion=1.0.0
 
-The run then:
+git push origin "v$(./gradlew -q currentVersion -Prelease.quiet)"
+```
 
-1. builds and tests (`./gradlew build`, which includes `spotlessCheck`);
-2. creates the tag locally with `createRelease`, so axion resolves the plain release version;
-3. runs `publishAndReleaseToMavenCentral` — rebuilds at that version, signs every artifact, uploads
-   the bundle and waits for the portal's validation;
-4. pushes the tag;
-5. creates the GitHub release with generated notes and the jars attached.
+Then **Releases → Draft a new release**, pick that tag, generate the notes, and **Publish**.
+
+Publishing fires the workflow, which:
+
+1. refuses to continue if the release is marked as a pre-release — Central has no equivalent;
+2. checks out the tag and resolves the version from it, refusing anything that is not a clean
+   release version;
+3. builds and tests (`./gradlew build`, which includes `spotlessCheck`);
+4. runs `publishAndReleaseToMavenCentral` — signs every artifact, uploads the bundle and waits for
+   the portal's validation;
+5. attaches the jars to the release.
+
+The tag must be `v<version>`, matching axion's tag prefix. `createRelease` produces exactly that,
+which is why it is worth using rather than tagging by hand.
 
 Artifacts usually appear on `repo1.maven.org` within 10–30 minutes of the portal accepting them.
 
-## Releasing locally
+If the workflow fails, the release is returned to draft. Fix the cause and publish it again.
 
-Possible, but the workflow is the supported path. If you must:
+## Publishing locally
+
+Possible, but the workflow is the supported path — it is the only route that also verifies the
+build and keeps the GitHub release and Central in step. If you must:
 
 ```bash
 export ORG_GRADLE_PROJECT_mavenCentralUsername=...
@@ -104,9 +121,8 @@ export ORG_GRADLE_PROJECT_mavenCentralPassword=...
 export ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --armor --export-secret-keys <KEY_ID>)"
 export ORG_GRADLE_PROJECT_signingInMemoryKeyPassword=...
 
-./gradlew createRelease -Prelease.versionIncrementer=incrementMinor
+git checkout "v1.0.0"     # publish from the tag, or the version carries a snapshot suffix
 ./gradlew clean publishAndReleaseToMavenCentral
-git push origin "v$(./gradlew -q currentVersion -Prelease.quiet)"
 ```
 
 `./gradlew build` needs none of these. Signing and credentials are only touched by the publish
