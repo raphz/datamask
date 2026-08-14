@@ -112,6 +112,16 @@ The original object is never mutated: the caller is still using it.
 A `MaskPlan` is derived per class and cached in a `ClassValue`, so after the first instance masking is
 a handful of `MethodHandle` invocations plus one constructor call.
 
+`MaskPlanCompiler` is a port with two implementations, and `DataMask.builder()` picks between them.
+`ReflectiveMaskPlanCompiler` is the one just described. `GeneratedMaskPlanCompiler` answers from plans
+that [`datamask-build-processor`](../datamask-build-processor/README.md) worked out at compile time —
+a direct call per member and a direct constructor invocation, no reflection at all — and sends
+everything it has no plan for to the reflective one. Adding the processor to the annotation path is
+the only thing an application does; `.compiler(...)` on the builder is there for anything else.
+
+Policy overrides turn generation off. A generated plan resolved `@PII` before `PolicyOverrides`
+existed, so answering from one while overrides are configured would silently ignore them.
+
 ## Keys
 
 `HASH` and `TOKENIZE` need a secret of at least sixteen bytes. `MaskKey.ephemeral()` exists for tests

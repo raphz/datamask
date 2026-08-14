@@ -6,21 +6,9 @@ dependencyResolutionManagement {
     }
 }
 
-include 'datamask-bom'
-include 'datamask-api'
-include 'datamask-core'
-include 'datamask-processor'
-include 'datamask-jackson'
-include 'datamask-logback'
-include 'datamask-log4j2'
-include 'datamask-opentelemetry'
-include 'datamask-kafka'
-include 'datamask-jdbc'
-include 'datamask-jpa'
-include 'datamask-ai'
-include 'datamask-spring-boot-autoconfigure'
-include 'datamask-spring-boot-starter'
-
-// Verification only, never published: it holds every module on its test classpath and asserts the
-// dependencies between them. It has to be last, because it depends on all of the above.
-include 'datamask-architecture-tests'
+new File('.').eachFileRecurse {
+    if (it.name == "build.gradle" && it.parentFile.name != '.' && it.parentFile.name != 'buildSrc') {
+        println "Included directory ${it.parentFile.name} due to ${it}"
+        include it.parentFile.name
+    }
+}

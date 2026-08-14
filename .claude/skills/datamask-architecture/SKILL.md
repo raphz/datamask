@@ -24,6 +24,7 @@ ch.raph.datamask.application      (use cases and orchestration)
 
 ch.raph.datamask.infrastructure   (adapters)
     reflect/  ReflectiveMaskPlanCompiler, Types
+    generated/GeneratedMaskPlan (SPI implemented by generated code), GeneratedMaskPlanCompiler
     masker/   Redact, Partial, Hash, Tokenize, Nullify, Email, Name, Iban, Pan,
               Phone, IpAddress, DateGeneralize, FormatPreserving, Masks (helpers)
     detect/   RegexDetector, Detectors (the default set), Checksums
@@ -56,7 +57,7 @@ depending on what the module is:
   bytecode still refers to them (`datamask-jdbc` and the PostgreSQL driver), and a facade the module
   writes through counts as its own (`org.slf4j..` for the logging integrations).
 - **Anything that is not a framework integration** gets a rule of its own instead, so its allowance can
-  be tighter than the shared integration one. `datamask-processor` is the example: an annotation
+  be tighter than the shared integration one. The two processor modules are the example: an annotation
   processor sees `javax.lang.model` mirrors of `@PII` and never the runtime types, so its rule allows
   the JDK and `api` only — `domain` and `application` stay out. Add the module to
   `MODULES_WITH_THEIR_OWN_RULE` when you write the rule, or the coverage test still fails.
@@ -319,6 +320,10 @@ task is the cheapest way to find out you coupled it to something you did not mea
 
 - No static "does this type carry PII" analysis. Declared types lie (`Object`, interfaces); the
   engine uses the runtime class and relies on the plan cache instead.
-- No build-time code generation yet. `MaskPlanCompiler` is a port precisely so a generated
-  implementation can slot in later for GraalVM native images.
+- No *further* build-time generation. `datamask-build-processor` already fills the `MaskPlanCompiler`
+  port with generated plans (`ch.raph.datamask.processor.plan`, read back by
+  `infrastructure/generated`), and `GeneratedMaskPlanCompiler` falls back to the reflective one for
+  anything it did not cover — which is what keeps generation optional rather than a second engine.
+  It steps aside entirely when `PolicyOverrides` is non-empty, because a plan resolved at compile
+  time cannot know about an override and ignoring one would mean an unmasked value.
 - No caching of value → pseudonym. It would speed up repeated ids but means holding PII in memory.

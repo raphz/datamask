@@ -27,7 +27,7 @@ import javax.tools.Diagnostic;
  * module to the annotation processor path and the same mistakes stop the build instead:
  *
  * {@snippet lang = groovy:
- * annotationProcessor 'ch.raph.datamask:datamask-processor'
+ * annotationProcessor 'ch.raph.datamask:datamask-check-processor'
  * }
  *
  * <p>Findings that fail at runtime are errors; findings the runtime corrects for itself are
