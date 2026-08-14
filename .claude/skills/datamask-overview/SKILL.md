@@ -56,7 +56,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
 | `datamask-spring-boot-autoconfigure` | scaffolded, empty | Auto-configuration for everything on the classpath |
 | `datamask-spring-boot-starter` | scaffolded, empty | The single dependency an application adds |
-| `datamask-processor` | scaffolded, empty | Compile-time validation of `@PII` usage |
+| `datamask-processor` | **implemented** | Compile-time validation of `@PII` usage |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
 `src/` yet.
@@ -80,8 +80,9 @@ the SPI in `datamask-api/README.md`. See `datamask-build` for what a module READ
 
 ## Roadmap — next modules, in the intended order
 
-Done: **`datamask-jackson`** (masks at serialization time) and **`datamask-jdbc`** (PostgreSQL error
-details plus bind parameters). What remains:
+Done: **`datamask-jackson`** (masks at serialization time), **`datamask-jdbc`** (PostgreSQL error
+details plus bind parameters) and **`datamask-processor`** (compile-time validation of `@PII`, taken
+out of order because it is independent of the engine). What remains:
 
 1. **`datamask-logback`** + **`datamask-log4j2`**.
 2. **`datamask-spring-boot-autoconfigure`** + **starter**. Registration file is
@@ -95,7 +96,6 @@ details plus bind parameters). What remains:
    `datamask-jdbc`, which protects what the database *says*; this protects what it *stores*.
 5. **`datamask-ai`** — sanitise the prompt, keep a reversible map, re-identify the model's answer
    locally.
-6. **`datamask-processor`**.
 
 A benchmark module (JMH) was considered and deliberately deferred — worth adding once an
 integration puts the engine on a logging hot path.

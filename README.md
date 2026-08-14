@@ -100,7 +100,7 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | `datamask-jpa` | planned | `AttributeConverter`s for pseudonymised columns at rest. |
 | `datamask-ai` | planned | Prompt sanitisation with reversible placeholders. |
 | `datamask-spring-boot-starter` | planned | The single dependency an application adds. |
-| `datamask-processor` | planned | Compile-time validation of `@PII` usage. |
+| [`datamask-processor`](datamask-processor/README.md) | **implemented** | Compile-time validation of `@PII` usage. |
 
 `datamask-api` is deliberately dependency-free so a domain module can declare `@PII` without taking
 on the engine, a reflection library, or a logging framework.
