@@ -65,11 +65,13 @@ public final class TextSanitizer {
     }
 
     /**
-     * Findings in document order with overlaps removed.
+     * Findings in document order with overlaps resolved to their union.
      *
      * <p>Overlaps are real: a card number is also a run of digits, and an IBAN contains what looks
      * like one. The earliest match wins, then the longest, then the higher-priority detector — the
-     * list order in {@code Detectors.defaults()} is the priority.
+     * list order in {@code Detectors.defaults()} is the priority. A finding that overlaps a kept
+     * one but extends past it is not dropped whole: its uncovered tail is text a detector
+     * classified as PII, so it is kept as a low-confidence fragment and masked too.
      */
     public List<PiiFinding> scan(CharSequence text) {
         List<PiiFinding> all = new ArrayList<>();
@@ -84,6 +86,11 @@ public final class TextSanitizer {
         for (PiiFinding finding : all) {
             if (finding.start() >= consumedTo) {
                 kept.add(finding);
+                consumedTo = finding.end();
+            } else if (finding.end() > consumedTo) {
+                // Marked not confident: masking decides from that flag, and a fragment must never
+                // drive a format masker whose reveal positions assume it sees a whole value.
+                kept.add(new PiiFinding(consumedTo, finding.end(), finding.category(), finding.detector(), false));
                 consumedTo = finding.end();
             }
         }
@@ -110,7 +117,10 @@ public final class TextSanitizer {
     }
 
     private String maskSpan(String span, PiiFinding finding, String path) {
-        MaskStrategy strategy = finding.category().defaultStrategy();
+        // An unconfirmed match — a checksum that did not hold, or the tail fragment of an overlap —
+        // is fully redacted: a format-preserving mask would reveal characters at positions chosen
+        // for a value the detector was not sure about.
+        MaskStrategy strategy = finding.confident() ? finding.category().defaultStrategy() : MaskStrategy.REDACT;
         if (strategy == MaskStrategy.AUTO || strategy == MaskStrategy.SCAN) {
             // Nothing more specific applies, and re-entering the scanner here would not terminate.
             strategy = MaskStrategy.REDACT;

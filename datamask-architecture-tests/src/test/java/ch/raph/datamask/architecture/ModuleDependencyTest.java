@@ -74,7 +74,11 @@ class ModuleDependencyTest {
                 new Integration("log4j2", List.of("org.apache.logging.log4j..")),
                 // logback-classic and logback-core both ship under ch.qos.logback. SLF4J is where
                 // ILoggingEvent's own marker, key-value and message-formatting types come from.
-                new Integration("logback", List.of("ch.qos.logback..", "org.slf4j..")));
+                // logstash-logback-encoder is optional at runtime and compileOnly in the module, but
+                // the bytecode of the one class that rebuilds its appending markers still refers to
+                // it — and it earns the allowance: those markers are how that encoder ships whole
+                // objects into the JSON, so leaving them unmasked would be the module's largest leak.
+                new Integration("logback", List.of("ch.qos.logback..", "org.slf4j..", "net.logstash.logback..")));
     }
 
     private record Integration(String module, List<String> frameworkPackages) {

@@ -3,6 +3,7 @@ package ch.raph.datamask.log4j2;
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.application.MaskingEngine;
 import ch.raph.datamask.domain.MaskingObserver;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -13,6 +14,8 @@ import org.apache.logging.log4j.message.MapMessage;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.ObjectMessage;
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.message.ReusableMessage;
+import org.apache.logging.log4j.message.ReusableObjectMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.util.IndexedReadOnlyStringMap;
 import org.apache.logging.log4j.util.ReadOnlyStringMap;
@@ -46,6 +49,11 @@ import org.apache.logging.log4j.util.StringMap;
  *   <li><b>Map and object messages</b> — log4j2's structured logging — are masked value by value and
  *       keep their type, so a JSON layout still writes the same shape.
  * </ul>
+ *
+ * <p>The garbage-free variants of all of these — {@code ReusableParameterizedMessage}, a
+ * {@code MutableLogEvent} standing in for its own message — are masked exactly like their immutable
+ * counterparts. A masked copy is materialized outside the reusable lifecycle, since the reusable
+ * instances are recycled the moment the logging call returns.
  *
  * <h2>The event is returned unchanged when it carried nothing</h2>
  *
@@ -173,6 +181,18 @@ public final class LogEventMasker {
         if (message instanceof ParameterizedMessage parameterized) {
             return maskParameterized(parameterized, maskedMessageThrown, throwableChanged, origin);
         }
+        if (message instanceof ReusableObjectMessage reusableObject) {
+            // The garbage-free counterpart of an ObjectMessage: same treatment, materialized as an
+            // immutable one when it changed. Checked before the general reusable branch, whose
+            // format-and-parameters view of this type would scan the object's text instead of masking
+            // its declarations.
+            Object parameter = reusableObject.getParameter();
+            Object masked = maskArgument(parameter, origin + ".message");
+            return masked == parameter ? message : new ObjectMessage(masked);
+        }
+        if (message instanceof ReusableMessage reusable) {
+            return maskReusable(reusable, maskedMessageThrown, throwableChanged, origin);
+        }
         if (message instanceof ObjectMessage object) {
             Object parameter = object.getParameter();
             Object masked = maskArgument(parameter, origin + ".message");
@@ -199,6 +219,48 @@ public final class LogEventMasker {
             return message;
         }
         return new ParameterizedMessage(maskedFormat, maskedParameters, maskedThrown);
+    }
+
+    /**
+     * The same shape running garbage-free: with {@code log4j2.enableThreadlocals} on — log4j2's default
+     * outside a web app — the logger reuses a {@code ReusableParameterizedMessage}, and an appender may
+     * see a {@code MutableLogEvent} standing in for its own message. Both expose the format and the
+     * parameters, which get exactly the treatment {@link #maskParameterized} gives them.
+     *
+     * <p>A changed message is materialized as an immutable {@link ParameterizedMessage}: the reusable
+     * instance is recycled the moment the logging call returns, so it must not be what carries the
+     * masked event's text. An unchanged one stays as it is, keeping a clean line inside the
+     * allocation-free lifecycle it was logged in.
+     */
+    @SuppressWarnings("deprecation") // Message.getFormat() is deprecated on the interface for being
+    // meaningless on most messages; the reusable implementations re-declare it un-deprecated as the
+    // pattern accessor, and the pattern is exactly what is needed here.
+    private Message maskReusable(
+            ReusableMessage message, Throwable maskedThrown, boolean throwableChanged, String origin) {
+        String format = message.getFormat();
+        if (format == null) {
+            // A reusable simple message over a non-String CharSequence: its text is all it has.
+            return maskFormatted(message, throwableChanged, origin);
+        }
+        String maskedFormat = scan(format, origin + ".message");
+        Object[] parameters = detachedParameters(message);
+        Object[] maskedParameters = maskArguments(parameters, origin);
+
+        if (maskedFormat == format && maskedParameters == parameters && !throwableChanged) {
+            return message;
+        }
+        return new ParameterizedMessage(maskedFormat, maskedParameters, maskedThrown);
+    }
+
+    /**
+     * The parameters, bounded to {@code getParameterCount()}. Every implementation log4j2 ships already
+     * trims; a custom reusable message may return its live internal buffer with trailing nulls, which
+     * must be neither masked nor handed to the immutable message that outlives the recycling.
+     */
+    private static Object[] detachedParameters(ReusableMessage message) {
+        Object[] parameters = message.getParameters();
+        int count = message.getParameterCount();
+        return parameters != null && parameters.length > count ? Arrays.copyOf(parameters, count) : parameters;
     }
 
     /**

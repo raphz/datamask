@@ -115,13 +115,22 @@ public final class MaskingEngine {
     }
 
     private Object descendObject(Object value, Class<?> runtime, String path, int depth, Set<Object> inProgress) {
-        // A graph that points back at itself cannot be reproduced as a copy. Returning the original
-        // reference terminates the walk; the cycle's members have already been masked on the way in.
+        // A graph that points back at itself cannot be reproduced as a copy. The back-reference
+        // becomes null: the original instance must not be planted inside the masked graph, because
+        // its members were masked into the copy, never in place — the original still carries raw PII.
         if (!inProgress.add(value)) {
-            return value;
+            return null;
         }
         try {
             MaskPlan plan = compiler.planFor(runtime);
+            if (plan.isFailed()) {
+                // The type's members could not even be read. Nothing proved the value is PII-free,
+                // so passing it through is not an option; the failure policy decides instead.
+                return onStructuralFailure(
+                        value,
+                        path,
+                        new IllegalStateException("cannot mask " + runtime.getName() + ": " + plan.failure()));
+            }
             if (plan.isOpaque()) {
                 return value;
             }
@@ -138,11 +147,11 @@ public final class MaskingEngine {
                 Object raw = member.accessor().get(value);
                 Object result =
                         switch (member.action()) {
-                            case MaskAction.Mask mask ->
-                                maskLeaf(raw, mask.descriptor(), member.declaredType(), memberPath);
-                            case MaskAction.Descend ignored -> descend(raw, memberPath, depth + 1, inProgress);
-                            case MaskAction.Keep ignored -> raw;
-                            case MaskAction.Drop ignored -> null;
+                            case MaskAction.Mask(PiiDescriptor descriptor) ->
+                                maskLeaf(raw, descriptor, member.declaredType(), memberPath);
+                            case MaskAction.Descend _ -> descend(raw, memberPath, depth + 1, inProgress);
+                            case MaskAction.Keep _ -> raw;
+                            case MaskAction.Drop _ -> null;
                         };
                 result = Coercion.toDeclaredType(result, member.declaredType());
                 masked[i] = result;
@@ -188,12 +197,15 @@ public final class MaskingEngine {
         int index = 0;
         boolean changed = false;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            if (index++ >= policy.maxCollectionElements()) {
+            if (index >= policy.maxCollectionElements()) {
                 observer.onDepthLimitExceeded(path + "{" + index + "}");
                 changed = true;
                 break;
             }
-            String entryPath = path + "." + entry.getKey();
+            // The path is positional on purpose. A map is often keyed by exactly the PII this
+            // library exists to hide, and the path reaches observers and exception messages —
+            // embedding the key would leak it through the reporting channel.
+            String entryPath = path + "{" + index + "}";
             // Keys carry PII more often than people expect — a map keyed by email address is a
             // common shape — but masking them changes lookup semantics, so it is opt-in.
             Object key = policy.maskMapKeys()
@@ -202,6 +214,7 @@ public final class MaskingEngine {
             Object masked = descend(entry.getValue(), entryPath, depth + 1, inProgress);
             changed |= masked != entry.getValue() || key != entry.getKey();
             copy.put(key, masked);
+            index++;
         }
         return changed ? copy : map;
     }
@@ -291,9 +304,15 @@ public final class MaskingEngine {
 
     /**
      * Turns {@link MaskStrategy#AUTO} into a concrete strategy: the category's default, then what
-     * the value's own content is detected to be, and full redaction when neither answers.
+     * the value's own content is detected to be, and full redaction when neither answers. Whatever
+     * was resolved is then hardened: a never-partially-revealed category refuses any strategy that
+     * would show part of the value.
      */
     private PiiDescriptor resolve(PiiDescriptor descriptor, Object value) {
+        return hardened(resolveStrategy(descriptor, value));
+    }
+
+    private PiiDescriptor resolveStrategy(PiiDescriptor descriptor, Object value) {
         if (descriptor.hasCustomMasker()) {
             return descriptor;
         }
@@ -312,6 +331,23 @@ public final class MaskingEngine {
                 .filter(detected -> detected.defaultStrategy() != MaskStrategy.AUTO)
                 .map(detected -> descriptor.withCategory(detected).withStrategy(detected.defaultStrategy()))
                 .orElseGet(() -> descriptor.withStrategy(MaskStrategy.REDACT));
+    }
+
+    /**
+     * The {@code keep = 0} rule in {@link PiiDescriptor} only constrains maskers that honour
+     * {@code keep}; the format maskers reveal fixed positions by design. So a category that must
+     * never be partially revealed is forced onto {@code REDACT} whenever the resolved strategy
+     * would show any part of the value. A custom masker is left alone — it is explicit code, and
+     * it receives {@code keep() == 0} as its signal.
+     */
+    private static PiiDescriptor hardened(PiiDescriptor descriptor) {
+        if (!descriptor.category().neverPartiallyReveal() || descriptor.hasCustomMasker()) {
+            return descriptor;
+        }
+        return switch (descriptor.strategy()) {
+            case REDACT, HASH, TOKENIZE, NULLIFY -> descriptor;
+            default -> descriptor.withStrategy(MaskStrategy.REDACT);
+        };
     }
 
     private Object onMaskFailure(String path, Throwable failure) {

@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Marker;
 import org.slf4j.event.KeyValuePair;
 import org.slf4j.helpers.MessageFormatter;
 
@@ -39,6 +40,9 @@ import org.slf4j.helpers.MessageFormatter;
  *       unique-constraint violation quoting the offending row is a real, ordinary leak.
  *   <li><b>Key-value pairs</b> from the fluent API ({@code atInfo().addKeyValue(...)}) are masked
  *       like arguments, since that is what they are.
+ *   <li><b>Markers</b>, because logstash-logback-encoder ships whole objects on them
+ *       ({@code Markers.append("customer", customer)}) and its encoder writes them into the JSON.
+ *       See {@link MarkerMasker} for what happens to each kind.
  * </ul>
  *
  * <h2>The event is returned unchanged when it carried nothing</h2>
@@ -55,6 +59,7 @@ public final class LoggingEventMasker {
 
     private final MaskingEngine engine;
     private final MaskingObserver observer;
+    private final MarkerMasker markers;
 
     /**
      * Free text — the message, MDC values, exception messages — can only be masked by scanning it,
@@ -71,6 +76,7 @@ public final class LoggingEventMasker {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.observer = engine.observer();
         this.scanText = engine.policy().scanUnannotatedText();
+        this.markers = new MarkerMasker(engine);
     }
 
     /** The same event when it carried no PII, a masked view of it otherwise. */
@@ -104,8 +110,15 @@ public final class LoggingEventMasker {
         IThrowableProxy throwable = event.getThrowableProxy();
         IThrowableProxy maskedThrowable = maskThrowable(throwable, origin + ".exception", 0);
 
+        List<Marker> markerList = event.getMarkerList();
+        List<Marker> maskedMarkers = markers.mask(markerList, origin);
+
         boolean bodyChanged = maskedArguments != arguments || maskedMessage != message;
-        if (!bodyChanged && maskedMdc == mdc && maskedKeyValuePairs == keyValuePairs && maskedThrowable == throwable) {
+        if (!bodyChanged
+                && maskedMdc == mdc
+                && maskedKeyValuePairs == keyValuePairs
+                && maskedThrowable == throwable
+                && maskedMarkers == markerList) {
             return event;
         }
 
@@ -119,7 +132,8 @@ public final class LoggingEventMasker {
                 maskedArguments,
                 maskedMdc,
                 maskedKeyValuePairs,
-                maskedThrowable);
+                maskedThrowable,
+                maskedMarkers);
     }
 
     /**
@@ -159,6 +173,13 @@ public final class LoggingEventMasker {
             // throw under FailureMode.THROW. What a formatter does with it is call toString(), so
             // masking that text is both safe and exactly what the line would have shown.
             String rendered = thrown.toString();
+            String safe = scan(rendered, path);
+            return safe == rendered ? argument : safe;
+        }
+        if (argument instanceof CharSequence text) {
+            // Scanned here rather than through the engine's own CharSequence branch, which descends
+            // from an empty path and would report a finding the observer cannot trace to a site.
+            String rendered = text.toString();
             String safe = scan(rendered, path);
             return safe == rendered ? argument : safe;
         }

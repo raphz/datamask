@@ -91,16 +91,24 @@ Each `MemberPlan` carries a `MaskAction`, a sealed interface with four cases:
 **Rebuilding.** Records use the canonical constructor. Beans use an all-arguments constructor whose
 parameter types match field order (what Lombok's `@AllArgsConstructor` and Jackson's
 `@ConstructorProperties` produce), else a no-argument constructor plus field writes. When neither
-works the plan's rebuilder throws a `MaskingException` with a message telling the caller what to do.
+works the members stay in the plan (so a PII-free instance still short-circuits) but the rebuilder
+throws a plain `IllegalStateException`, which the engine degrades per the failure policy — `null`
+under REDACT, `MaskingException` under THROW. A type whose members cannot even be *read* gets
+`MaskPlan.failed(type, reason)` — distinct from `opaque`, and treated as a structural failure
+rather than passed through (`kafka`'s `RecordMasker` refuses the resulting `null` and fails the
+send instead, because a null record value is a tombstone, not less information).
 
 **The no-change short-circuit is important.** If no member changed, the engine returns the *same
 instance* and never calls the rebuilder. That is why a PII-free graph costs no allocation, and why
 an unrebuildable type that happens to contain no PII still works.
 
 **Traversal safety.** Cycle detection via an identity set with enter/exit scoping (a shared node in
-a DAG is not a cycle). Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded by
-`maxCollectionElements`; the tail is dropped, which discloses nothing. Map keys are masked only when
-`maskMapKeys` is on, because masking them changes lookup semantics.
+a DAG is not a cycle); a back-reference becomes `null` in the copy — never the original instance,
+whose members are still raw. Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded
+by `maxCollectionElements`; the tail is dropped, which discloses nothing. Map keys are masked only
+when `maskMapKeys` is on, because masking them changes lookup semantics — and map *paths* are
+positional (`{0}`, `{0}{key}`), never the key itself, because paths reach observers and exception
+messages.
 
 **Type coercion** (`Coercion.toDeclaredType`). Masking naturally produces text, but the member it
 goes back into may be a `BigDecimal` or an `int`. Rather than refuse, the value becomes the type's
@@ -117,6 +125,12 @@ the rebuilt object type-correct.
 3. **Content detection** — `TextSanitizer.classify()` returns a category only when a detector
    matches the value end to end.
 4. **`REDACT`** — the fallback. Never "pass through".
+
+Whatever was resolved is then **hardened** (`MaskingEngine.hardened`): a `neverPartiallyReveal()`
+category refuses any strategy that would show part of the value — only REDACT, HASH, TOKENIZE and
+NULLIFY survive; everything else becomes REDACT. Each revealing masker also carries the same guard
+as its first line, and `PiiDescriptor`'s compact constructor pins those categories to
+`Sensitivity.CRITICAL` so no policy threshold can switch their masking off.
 
 This chain is why `@PII Email email` produces email-shaped masking with no further configuration.
 

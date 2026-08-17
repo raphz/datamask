@@ -167,7 +167,17 @@ public final class RecordMasker {
         // The engine's contract is a masked copy of the same type, which is what makes this cast
         // sound. If it ever were not, the serializer downstream rejects the value rather than
         // writing it: a type error fails the send, and a failed send discloses nothing.
-        return (T) engine.mask(value);
+        Object masked = engine.mask(value);
+        if (masked == null) {
+            // The engine degrades a structural failure — an unrebuildable or unreadable type — to
+            // null, which is the right fail-closed answer for a log line. Here it is not: a null
+            // record value is a tombstone, a different message, not less information. No
+            // placeholder is a valid value of the payload's type, so the send fails instead.
+            throw new IllegalStateException(
+                    "a value of type " + value.getClass().getName() + " on " + path
+                            + " could not be masked; failing the send rather than producing a tombstone");
+        }
+        return (T) masked;
     }
 
     /**

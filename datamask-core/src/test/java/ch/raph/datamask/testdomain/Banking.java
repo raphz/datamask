@@ -106,6 +106,48 @@ public final class Banking {
         }
     }
 
+    /** Readable members but no way to rebuild: the constructor does not match the field order. */
+    public static final class Unrebuildable {
+
+        @PII(category = PiiCategory.EMAIL)
+        private final String email;
+
+        private final int flags;
+
+        public Unrebuildable(int flags, String email) {
+            this.flags = flags;
+            this.email = email;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public int getFlags() {
+            return flags;
+        }
+    }
+
+    /** Unrebuildable like the above, but PII-free — the no-change short-circuit must keep it working. */
+    public static final class UnrebuildableClean {
+
+        private final int flags;
+        private final boolean active;
+
+        public UnrebuildableClean(boolean active, int flags) {
+            this.active = active;
+            this.flags = flags;
+        }
+
+        public int getFlags() {
+            return flags;
+        }
+
+        public boolean isActive() {
+            return active;
+        }
+    }
+
     /** Self-referencing, to prove the walk terminates. */
     public static final class Node {
 

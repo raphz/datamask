@@ -23,17 +23,17 @@ public enum PiiCategory {
     /** Business Identifier Code. Not personal on its own, but it narrows an account holder. */
     BIC(MaskStrategy.PARTIAL, 3),
     /** Primary Account Number — a payment card number. Governed by PCI-DSS. */
-    PAN(MaskStrategy.PAN, 4),
+    PAN(MaskStrategy.PAN, 4, Sensitivity.CRITICAL),
     /** Card verification value. Storing or logging it is prohibited outright, so never partial. */
-    CARD_VERIFICATION_VALUE(MaskStrategy.REDACT, 0),
+    CARD_VERIFICATION_VALUE(MaskStrategy.REDACT, 0, Sensitivity.CRITICAL),
     /** Card expiry date. */
-    CARD_EXPIRY(MaskStrategy.REDACT, 0),
+    CARD_EXPIRY(MaskStrategy.REDACT, 0, Sensitivity.CRITICAL),
 
     /** National identifier: Swiss AVS/AHV, US SSN, and equivalents. */
-    NATIONAL_ID(MaskStrategy.PARTIAL, 0),
-    TAX_ID(MaskStrategy.PARTIAL, 0),
+    NATIONAL_ID(MaskStrategy.PARTIAL, 0, Sensitivity.CRITICAL),
+    TAX_ID(MaskStrategy.PARTIAL, 0, Sensitivity.CRITICAL),
     /** Passport or identity-card number. */
-    IDENTITY_DOCUMENT(MaskStrategy.PARTIAL, 0),
+    IDENTITY_DOCUMENT(MaskStrategy.PARTIAL, 0, Sensitivity.CRITICAL),
 
     /**
      * A stable internal identifier for a person. Hashed rather than redacted, because correlating
@@ -42,8 +42,8 @@ public enum PiiCategory {
     CUSTOMER_ID(MaskStrategy.HASH, -1),
 
     /** Passwords, API keys, bearer tokens, private keys. Never partially revealed. */
-    CREDENTIAL(MaskStrategy.REDACT, 0),
-    BIOMETRIC(MaskStrategy.REDACT, 0),
+    CREDENTIAL(MaskStrategy.REDACT, 0, Sensitivity.CRITICAL),
+    BIOMETRIC(MaskStrategy.REDACT, 0, Sensitivity.CRITICAL),
 
     IP_ADDRESS(MaskStrategy.IP, -1),
     DEVICE_ID(MaskStrategy.HASH, -1),
@@ -57,10 +57,16 @@ public enum PiiCategory {
 
     private final MaskStrategy defaultStrategy;
     private final int defaultKeep;
+    private final Sensitivity defaultSensitivity;
 
     PiiCategory(MaskStrategy defaultStrategy, int defaultKeep) {
+        this(defaultStrategy, defaultKeep, Sensitivity.HIGH);
+    }
+
+    PiiCategory(MaskStrategy defaultStrategy, int defaultKeep, Sensitivity defaultSensitivity) {
         this.defaultStrategy = defaultStrategy;
         this.defaultKeep = defaultKeep;
+        this.defaultSensitivity = defaultSensitivity;
     }
 
     /** The strategy applied when the annotation leaves it on {@link MaskStrategy#AUTO}. */
@@ -71,6 +77,15 @@ public enum PiiCategory {
     /** Trailing characters left visible by default; {@code -1} when the strategy decides. */
     public int defaultKeep() {
         return defaultKeep;
+    }
+
+    /**
+     * The sensitivity applied when the annotation leaves {@code sensitivity} on its default. Card
+     * data, credentials and national identifiers are {@link Sensitivity#CRITICAL}, so no policy
+     * threshold can switch off their masking by accident.
+     */
+    public Sensitivity defaultSensitivity() {
+        return defaultSensitivity;
     }
 
     /**

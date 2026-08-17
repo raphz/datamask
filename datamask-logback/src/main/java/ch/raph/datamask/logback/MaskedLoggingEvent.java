@@ -31,6 +31,7 @@ final class MaskedLoggingEvent implements ILoggingEvent {
     private final Map<String, String> mdc;
     private final List<KeyValuePair> keyValuePairs;
     private final IThrowableProxy throwableProxy;
+    private final List<Marker> markers;
 
     MaskedLoggingEvent(
             ILoggingEvent delegate,
@@ -39,7 +40,8 @@ final class MaskedLoggingEvent implements ILoggingEvent {
             Object[] arguments,
             Map<String, String> mdc,
             List<KeyValuePair> keyValuePairs,
-            IThrowableProxy throwableProxy) {
+            IThrowableProxy throwableProxy,
+            List<Marker> markers) {
         this.delegate = delegate;
         this.message = message;
         this.formattedMessage = formattedMessage;
@@ -47,6 +49,7 @@ final class MaskedLoggingEvent implements ILoggingEvent {
         this.mdc = mdc;
         this.keyValuePairs = keyValuePairs;
         this.throwableProxy = throwableProxy;
+        this.markers = markers;
     }
 
     /**
@@ -54,11 +57,12 @@ final class MaskedLoggingEvent implements ILoggingEvent {
      * and nothing whatsoever of the message.
      *
      * <p>The notice names no exception message, because the exception was raised while handling a
-     * value and may well quote it.
+     * value and may well quote it. The markers go too: a JSON encoder writes their payloads
+     * whatever the message says, so keeping them would be the leak this notice exists to prevent.
      */
     static ILoggingEvent withheld(ILoggingEvent event, String placeholder) {
         String notice = placeholder + " [datamask withheld this message: masking failed]";
-        return new MaskedLoggingEvent(event, notice, notice, null, Map.of(), List.of(), null);
+        return new MaskedLoggingEvent(event, notice, notice, null, Map.of(), List.of(), null, List.of());
     }
 
     @Override
@@ -129,7 +133,7 @@ final class MaskedLoggingEvent implements ILoggingEvent {
 
     @Override
     public List<Marker> getMarkerList() {
-        return delegate.getMarkerList();
+        return markers;
     }
 
     @Override

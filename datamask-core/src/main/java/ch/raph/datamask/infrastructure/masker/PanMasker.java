@@ -18,6 +18,9 @@ public final class PanMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         String digits = Checksums.digitsOnly(Masks.text(value));
         if (digits.length() < 12) {
             return Masks.placeholder(context);

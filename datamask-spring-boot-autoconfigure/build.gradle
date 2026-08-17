@@ -29,4 +29,7 @@ dependencies {
     testImplementation project(':datamask-kafka')
     testImplementation libs.micrometer.core
     testImplementation libs.spring.boot.test
+    // Boot's real metrics auto-configuration chain, so the ordering test runs the same
+    // condition-evaluation sequence a Boot application does.
+    testImplementation libs.spring.boot.micrometer.metrics
 }

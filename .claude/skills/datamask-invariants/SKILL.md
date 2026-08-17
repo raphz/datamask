@@ -31,7 +31,11 @@ nested field. This was a real bug, found by a test; do not "simplify" it away.
 is reversible by enumeration in seconds — the input space is tiny — and **would not qualify as
 pseudonymisation under GDPR Article 4(5)**.
 
-- `MaskKey.ofSecret` rejects anything under 16 bytes. Do not lower this.
+- `MaskKey.ofSecret` rejects anything under 16 bytes. Do not lower this. It also runs the secret
+  through HKDF-SHA-256 (`javax.crypto.KDF`, deterministic, fixed salt/info) before it becomes the
+  HMAC key — a configured secret is a human-chosen passphrase, and using it directly would let one
+  known (value, pseudonym) pair brute-force it offline. Do not remove the derivation; changing the
+  salt or info strings changes every pseudonym.
 - `MaskKey.ephemeral()` is for tests and local development. It is safe but makes pseudonyms
   incomparable across instances and restarts, removing the reason to prefer `HASH` over `REDACT`.
 - **Never ship a built-in default key.** A publicly known key makes every pseudonym trivially
@@ -99,6 +103,19 @@ business logic is operating on.
   terminate.
 - `Mac` is created per call in `HmacPseudonymizer`, not cached in a field or a `ThreadLocal`. It is
   not thread-safe, and a `ThreadLocal` would pin memory per virtual thread.
+- A cycle's back-reference becomes `null` in the masked copy, never the original instance —
+  "the members were already masked on the way in" is wrong, because they were masked into the
+  *copy*; the original still carries raw PII.
+- `MaskPlan.failed` is distinct from `MaskPlan.opaque`, and `isOpaque()` must never be true for a
+  failed plan: an opaque type is proven safe to pass through, a failed one only *looks* empty
+  because its members could not be read.
+- `TextSanitizer.scan` keeps the uncovered tail of an overlapping finding as a low-confidence
+  fragment, and `maskSpan` redacts any non-confident finding outright. Dropping overlapped findings
+  whole would disclose their tails; format-masking a fragment would reveal characters at positions
+  chosen for a whole value.
+- The never-partially-reveal guard exists in three layers on purpose: `PiiDescriptor` (keep = 0 and
+  CRITICAL sensitivity), `MaskingEngine.hardened` (revealing strategies become REDACT), and the
+  first line of every revealing masker. Removing any one of them is not a cleanup.
 
 ## Reviewing a change here
 

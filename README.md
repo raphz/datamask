@@ -114,7 +114,7 @@ classpath and fails the build when it drifts. It is not in the table because it 
 
 ## Requirements
 
-Java 21 or later. Built and tested on JDK 25.
+Java 25 or later.
 
 ## Building
 

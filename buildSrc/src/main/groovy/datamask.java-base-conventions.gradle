@@ -10,8 +10,6 @@ plugins {
 def libs = extensions.getByType(org.gradle.api.artifacts.VersionCatalogsExtension).named('libs')
 
 java {
-    // Built with the JDK the developer already has (25); `options.release` below is what
-    // actually gates the bytecode level, so no second toolchain needs provisioning.
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
     }
@@ -21,8 +19,9 @@ java {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    // Java 21 is the published baseline: it is what most banking estates run today.
-    options.release = 21
+    // Java 25 is the published baseline: the current LTS, and what the library's crypto
+    // (javax.crypto.KDF) and language level are written against.
+    options.release = 25
     // Required so the reflective plan compiler can recover constructor parameter names
     // for non-record beans, and so Spring can bind @ConfigurationProperties constructors.
     options.compilerArgs << '-parameters'

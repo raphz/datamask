@@ -14,6 +14,9 @@ public final class EmailMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         String text = Masks.text(value);
         int at = text.lastIndexOf('@');
         if (at <= 0 || at == text.length() - 1) {

@@ -3,6 +3,7 @@ package ch.raph.datamask.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ch.raph.datamask.api.PiiCategory;
+import ch.raph.datamask.domain.PiiDetector;
 import ch.raph.datamask.domain.PiiFinding;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -82,6 +83,57 @@ class TextSanitizerTest {
     @DisplayName("returns text without PII unchanged")
     void leavesCleanTextAlone() {
         assertThat(dataMask.maskText("payment accepted")).isEqualTo("payment accepted");
+    }
+
+    @Test
+    @DisplayName("masks the tail of an overlapping finding instead of disclosing it")
+    void masksOverlapTails() {
+        // Two detectors whose findings overlap: [2,8) wins as the earlier match, and the loser's
+        // tail [8,12) is text a detector classified as PII — it must not survive unmasked.
+        PiiDetector head = fixed("head", "AAAABB");
+        PiiDetector tail = fixed("tail", "BBBBBB");
+        DataMask overlapping = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .detectors(List.of(head, tail))
+                .build();
+
+        String masked = overlapping.maskText("xxAAAABBBBBByy");
+
+        assertThat(masked).startsWith("xx").endsWith("yy").doesNotContain("A").doesNotContain("B");
+    }
+
+    @Test
+    @DisplayName("reports an overlap tail as a separate, unconfirmed finding")
+    void reportsOverlapTailAsFragment() {
+        DataMask overlapping = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .detectors(List.of(fixed("head", "AAAABB"), fixed("tail", "BBBBBB")))
+                .build();
+
+        List<PiiFinding> findings = overlapping.scan("xxAAAABBBBBByy");
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings.getFirst().confident()).isTrue();
+        assertThat(findings.getLast().confident()).isFalse();
+        assertThat(findings.getLast().start()).isEqualTo(findings.getFirst().end());
+    }
+
+    /** A detector reporting every occurrence of a fixed literal, for overlap scenarios. */
+    private static PiiDetector fixed(String name, String literal) {
+        return new PiiDetector() {
+            @Override
+            public String name() {
+                return name;
+            }
+
+            @Override
+            public List<PiiFinding> detect(CharSequence text) {
+                int at = text.toString().indexOf(literal);
+                return at < 0
+                        ? List.of()
+                        : List.of(new PiiFinding(at, at + literal.length(), PiiCategory.CREDENTIAL, name, true));
+            }
+        };
     }
 
     @Test

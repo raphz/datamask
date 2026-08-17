@@ -17,9 +17,14 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.config.DefaultConfiguration;
 import org.apache.logging.log4j.core.impl.ContextDataFactory;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.core.impl.MutableLogEvent;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.apache.logging.log4j.message.ObjectMessage;
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.message.ReusableMessage;
+import org.apache.logging.log4j.message.ReusableObjectMessage;
+import org.apache.logging.log4j.message.ReusableParameterizedMessage;
+import org.apache.logging.log4j.message.ReusableSimpleMessage;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.message.StringMapMessage;
 import org.junit.jupiter.api.DisplayName;
@@ -170,6 +175,154 @@ class LogEventMaskerTest {
             assertThat(masked.getMessage().getFormattedMessage())
                     .doesNotContain(IBAN)
                     .doesNotContain(EMAIL);
+        }
+    }
+
+    @Nested
+    @DisplayName("Garbage-free reusable messages")
+    class GarbageFree {
+
+        @Test
+        @DisplayName("masks a declared field of a reusable message parameter, the shape a garbage-free logger produces")
+        void masksDeclaredFieldOfAReusableParameter() {
+            LogEvent masked = masker.mask(message(reusable("customer {}", customer())));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL)
+                    .contains(MASKED_IBAN)
+                    .contains(MASKED_EMAIL);
+        }
+
+        @Test
+        @DisplayName("still masks a declared field with scanning off, exactly as the immutable message path does")
+        void stillMasksDeclaredFieldsWithScanningOff() {
+            LogEventMasker quiet = new LogEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .policy(MaskingPolicy.strict().withScanUnannotatedText(false))
+                    .build());
+
+            LogEvent masked = quiet.mask(message(reusable("customer {}", customer())));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL);
+        }
+
+        @Test
+        @DisplayName("masks a bare string parameter of a reusable message, which no annotation covered")
+        void masksBareStringReusableParameter() {
+            LogEvent masked = masker.mask(message(reusable("crediting {}", IBAN)));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo("crediting " + MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("masks a value in the format of a reusable message, even when every parameter was clean")
+        void masksTheFormatOfAReusableMessage() {
+            LogEvent masked = masker.mask(message(reusable("contact " + EMAIL + " about {}", "PMT-1")));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(EMAIL)
+                    .isEqualTo("contact " + MASKED_EMAIL + " about PMT-1");
+        }
+
+        @Test
+        @DisplayName("materializes the masked message outside the reusable lifecycle, surviving the recycling")
+        void materializesOutsideTheReusableLifecycle() {
+            ReusableParameterizedMessage recycled = reusable("customer {}", customer());
+
+            LogEvent masked = masker.mask(message(recycled));
+            recycled.clear(); // what the logger does to the instance right after the call returns
+
+            assertThat(masked.getMessage()).isNotInstanceOf(ReusableMessage.class);
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("keeps a clean reusable event as the same instance, inside the allocation-free lifecycle")
+        void keepsACleanReusableEvent() {
+            LogEvent event = message(reusable("payment {} accepted in {} ms", "PMT-1", 12));
+
+            assertThat(masker.mask(event)).isSameAs(event);
+        }
+
+        @Test
+        @DisplayName("masks a mutable log event standing in for its own message, which async appenders hand over")
+        void masksAMutableLogEventActingAsItsOwnMessage() {
+            MutableLogEvent mutable = new MutableLogEvent();
+            mutable.setLoggerName(LOGGER);
+            mutable.setLevel(Level.INFO);
+            mutable.setMessage(reusable("customer {}", customer()));
+
+            LogEvent masked = masker.mask(mutable);
+            mutable.clear();
+
+            assertThat(masked).isNotSameAs(mutable);
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL)
+                    .contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("masks a reusable object message and materializes it as an object message")
+        void masksAReusableObjectMessage() {
+            ReusableObjectMessage object = new ReusableObjectMessage();
+            object.set(customer());
+
+            LogEvent masked = masker.mask(message(object));
+
+            assertThat(masked.getMessage()).isInstanceOf(ObjectMessage.class);
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL);
+        }
+
+        @Test
+        @DisplayName("masks the text of a reusable simple message, which has no parameter to declare")
+        void masksAReusableSimpleMessage() {
+            ReusableSimpleMessage simple = new ReusableSimpleMessage();
+            simple.set("payment from " + IBAN + " accepted");
+
+            LogEvent masked = masker.mask(message(simple));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo("payment from " + MASKED_IBAN + " accepted");
+        }
+
+        @Test
+        @DisplayName("names the parameter position of a detector hit in a reusable message")
+        void reportsTheParameterPosition() {
+            Recorder recorder = new Recorder();
+
+            observedBy(recorder).mask(message(reusable("crediting {} and {}", "PMT-1", IBAN)));
+
+            assertThat(recorder.undeclared).containsExactly(LOGGER + ".arg1:IBAN");
+        }
+
+        @Test
+        @DisplayName("withholds a reusable message it could not mask, never passing the raw text through")
+        void withholdsAReusableMessageItCouldNotMask() {
+            LogEventMasker throwing = new LogEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                    .build());
+
+            LogEvent masked = throwing.mask(message(reusable("checking {}", new Banking.Fragile(IBAN))));
+
+            assertThat(masked.getMessage().getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .contains("withheld");
+        }
+
+        private ReusableParameterizedMessage reusable(String format, Object... parameters) {
+            return new ReusableParameterizedMessage().set(format, parameters);
         }
     }
 

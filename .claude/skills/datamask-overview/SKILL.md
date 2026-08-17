@@ -30,14 +30,14 @@ auditor of the code is a compliance officer.
 |---|---|
 | Group | `ch.raph.datamask` |
 | Root package | `ch.raph.datamask` |
-| Published Java baseline | **21** (`options.release = 21`) |
+| Published Java baseline | **25** (`options.release = 25`) |
 | Build/test JDK | **25** (toolchain) |
 | Gradle | 9.7, Groovy DSL |
 | Spring Boot target | **4.1.0** (implies Jackson 3, `tools.jackson.*`) |
 | Licence | Apache 2.0 |
 
-Java 21 rather than 25 is deliberate: this is a library banks embed everywhere, and most banking
-production estates run 21. Build on 25, publish for 21.
+The baseline was raised from 21 to 25 (current LTS) in August 2026: the library uses Java 25
+language and API features freely — `javax.crypto.KDF` (HKDF), record patterns, unnamed variables.
 
 ## Module map
 

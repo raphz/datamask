@@ -462,6 +462,162 @@ class LoggingEventMaskerTest {
                 DataMask.builder().secret(SECRET).observer(observer).build());
     }
 
+    @Nested
+    @DisplayName("Markers")
+    class Markers {
+
+        @Test
+        @DisplayName("masks an object shipped on a logstash marker, which the encoder writes into the JSON")
+        void masksLogstashAppendedObject() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(net.logstash.logback.marker.Markers.append("customer", customer()));
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json)
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL)
+                    .contains(MASKED_IBAN)
+                    .contains(MASKED_EMAIL);
+        }
+
+        @Test
+        @DisplayName("masks the entries of an appended map")
+        void masksLogstashAppendedEntries() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(
+                    net.logstash.logback.marker.Markers.appendEntries(java.util.Map.of("iban", IBAN, "country", "CH")));
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json).doesNotContain(IBAN).contains("CH");
+        }
+
+        @Test
+        @DisplayName("masks a logstash marker attached as a child of a filtering marker")
+        void masksNestedLogstashMarker() {
+            org.slf4j.Marker filtering = org.slf4j.MarkerFactory.getDetachedMarker("AUDIT");
+            filtering.add(net.logstash.logback.marker.Markers.append("customer", customer()));
+            LoggingEvent event = event("payment received");
+            event.addMarker(filtering);
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json).doesNotContain(IBAN).doesNotContain(EMAIL).contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("leaves a plain filtering marker alone, so marker-based filters keep working")
+        void keepsPlainMarkers() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(org.slf4j.MarkerFactory.getMarker("AUDIT"));
+
+            ILoggingEvent masked = masker.mask(event);
+
+            assertThat(masked.getMarkerList()).isSameAs(event.getMarkerList());
+            assertThat(masked).isSameAs(event);
+        }
+
+        @Test
+        @DisplayName("returns the very same event when nothing, markers included, carried PII")
+        void keepsCleanEventsIntact() {
+            LoggingEvent event = event("payment received");
+
+            assertThat(masker.mask(event)).isSameAs(event);
+        }
+
+        @Test
+        @DisplayName("strips the payload of a marker type it cannot inspect rather than forwarding it")
+        void stripsUnknownMarkerTypes() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(new LeakyMarker("AUDIT", IBAN));
+
+            ILoggingEvent masked = masker.mask(event);
+
+            assertThat(masked.getMarkerList()).hasSize(1);
+            assertThat(masked.getMarkerList().getFirst().getName()).isEqualTo("AUDIT");
+            assertThat(encode(masked)).doesNotContain(IBAN);
+        }
+
+        @Test
+        @DisplayName("redacts a marker whose payload masking failed, instead of passing it through")
+        void redactsMarkersThatFailToMask() {
+            Recorder recorder = new Recorder();
+            LoggingEventMasker throwing = new LoggingEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                    .observer(recorder)
+                    .build());
+            LoggingEvent event = event("payment received");
+            event.addMarker(net.logstash.logback.marker.Markers.append("secret", new Banking.Fragile(IBAN)));
+
+            String json = encode(throwing.mask(event));
+
+            assertThat(json).doesNotContain(IBAN);
+            assertThat(recorder.failures).isNotEmpty();
+        }
+
+        /** A marker type from outside this module whose payload only surfaces through toString(). */
+        private record LeakyMarker(String name, String payload) implements org.slf4j.Marker {
+
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String toString() {
+                return name + "=" + payload;
+            }
+
+            @Override
+            public void add(org.slf4j.Marker reference) {}
+
+            @Override
+            public boolean remove(org.slf4j.Marker reference) {
+                return false;
+            }
+
+            @Override
+            public boolean hasReferences() {
+                return false;
+            }
+
+            @Override
+            @Deprecated
+            public boolean hasChildren() {
+                return false;
+            }
+
+            @Override
+            public java.util.Iterator<org.slf4j.Marker> iterator() {
+                return java.util.Collections.emptyIterator();
+            }
+
+            @Override
+            public boolean contains(org.slf4j.Marker other) {
+                return false;
+            }
+
+            @Override
+            public boolean contains(String otherName) {
+                return false;
+            }
+        }
+    }
+
+    /** What a JSON stack actually ships, which is where a marker payload would surface. */
+    private static String encode(ILoggingEvent event) {
+        net.logstash.logback.encoder.LogstashEncoder encoder = new net.logstash.logback.encoder.LogstashEncoder();
+        encoder.setContext(CONTEXT);
+        encoder.start();
+        try {
+            return new String(encoder.encode(event), java.nio.charset.StandardCharsets.UTF_8);
+        } finally {
+            encoder.stop();
+        }
+    }
+
     private static Banking.Customer customer() {
         return new Banking.Customer(new Banking.Email(EMAIL), IBAN, "CH");
     }

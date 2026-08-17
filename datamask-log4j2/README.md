@@ -43,6 +43,20 @@ The engine and the text sanitiser both return the **same instance** when nothing
 scan and nothing else — no copy, no allocation. That is what makes this affordable on a path that runs
 on every line.
 
+## Garbage-free logging is covered
+
+With `log4j2.enableThreadlocals` on — the default everywhere except a web app — a logger does not build
+a `ParameterizedMessage`. It reuses a `ReusableParameterizedMessage`, and what reaches a rewrite policy
+or an appender is often a `MutableLogEvent` standing in for its own message. Both are masked exactly
+like their immutable counterparts: the format is scanned and each parameter is masked from its `@PII`
+declarations, so `logger.info("paid {}", customer)` is covered identically in both modes.
+
+Materialization is the one difference. A reusable message is recycled the moment the logging call
+returns, so a masked line **leaves the reusable lifecycle**: the copy is an immutable event carrying an
+immutable message, safe to hold, buffer or ship asynchronously. A clean line stays in it — the same
+reusable event is forwarded untouched, so the allocation-free path log4j2 promises is only paid for by
+lines that actually carried something to mask.
+
 ## Rewriting the event, not the text
 
 Log4j2 offers both, and the difference is coverage. `MaskingRewritePolicy` replaces the event, so
@@ -107,8 +121,9 @@ well quote it.
 
 ## Tests
 
-52, all asserting the raw value is **absent** from what a layout renders rather than only that the
+64, all asserting the raw value is **absent** from what a layout renders rather than only that the
 masked form is present. They cover the declared strategies, bare values a detector recognises, map and
 object messages, the context map, cause chains and suppressed exceptions, the same-type reconstruction
 and its stand-in, both policies, the observer paths, plugin registration through the generated
-descriptor, and the fail-closed paths.
+descriptor, the fail-closed paths, and garbage-free mode — reusable messages, a mutable event standing
+in for its own message, and a real logger running with threadlocals enabled.

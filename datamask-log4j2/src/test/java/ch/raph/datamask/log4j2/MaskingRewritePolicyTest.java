@@ -3,6 +3,7 @@ package ch.raph.datamask.log4j2;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ch.raph.datamask.application.DataMask;
+import ch.raph.datamask.log4j2.testdomain.Banking;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -10,11 +11,13 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Appender;
 import org.apache.logging.log4j.core.Core;
 import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.appender.rewrite.RewriteAppender;
 import org.apache.logging.log4j.core.config.AppenderRef;
 import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.DefaultConfiguration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.config.plugins.util.PluginManager;
 import org.apache.logging.log4j.core.config.plugins.util.PluginType;
@@ -85,6 +88,74 @@ class MaskingRewritePolicyTest {
             LogEvent rewritten = new MaskingRewritePolicy(dataMask()).rewrite(event);
 
             assertThat(rewritten).isSameAs(event);
+        }
+    }
+
+    @Nested
+    @DisplayName("Garbage-free logging")
+    class GarbageFree {
+
+        @Test
+        @DisplayName("masks a declared field through a real logger running garbage-free, the default outside a web app")
+        void masksThroughARealGarbageFreeLogger() {
+            // Reusable messages and mutable events only flow when threadlocals are on. They are on by
+            // default in a plain JVM like this test's; the assertion is here so the test fails loudly
+            // instead of silently exercising the immutable path if that ever changes.
+            assertThat(org.apache.logging.log4j.util.Constants.ENABLE_THREADLOCALS)
+                    .as("log4j2 must run garbage-free for this test to mean anything")
+                    .isTrue();
+
+            LoggerContext context = new LoggerContext("garbage-free");
+            try {
+                context.start();
+                Configuration configuration = context.getConfiguration();
+                Rendering rendering = new Rendering();
+                configuration.addAppender(rendering);
+                RewriteAppender rewrite = RewriteAppender.createAppender(
+                        "MASKED",
+                        "true",
+                        new AppenderRef[] {AppenderRef.createAppenderRef(rendering.getName(), null, null)},
+                        configuration,
+                        new MaskingRewritePolicy(dataMask()),
+                        null);
+                rewrite.start();
+                configuration.addAppender(rewrite);
+                LoggerConfig loggerConfig = new LoggerConfig(LOGGER, Level.INFO, false);
+                loggerConfig.addAppender(rewrite, Level.INFO, null);
+                configuration.addLogger(LOGGER, loggerConfig);
+                context.updateLoggers();
+
+                context.getLogger(LOGGER)
+                        .info("customer {}", new Banking.Customer(new Banking.Email(EMAIL), IBAN, "CH"));
+
+                assertThat(rendering.lines)
+                        .singleElement()
+                        .satisfies(line -> assertThat(line)
+                                .doesNotContain(IBAN)
+                                .doesNotContain(EMAIL)
+                                .contains("CH93 **** **** **** *295 7"));
+            } finally {
+                context.stop();
+            }
+        }
+
+        /**
+         * Renders at append time: a garbage-free event must not be kept and read later, which is the
+         * very lifecycle this test is about.
+         */
+        private static final class Rendering extends AbstractAppender {
+
+            private final List<String> lines = new ArrayList<>();
+
+            private Rendering() {
+                super("RENDERED", null, null, true, Property.EMPTY_ARRAY);
+                start();
+            }
+
+            @Override
+            public void append(LogEvent event) {
+                lines.add(event.getMessage().getFormattedMessage());
+            }
         }
     }
 

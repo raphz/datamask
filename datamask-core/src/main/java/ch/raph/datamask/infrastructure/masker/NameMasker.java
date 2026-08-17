@@ -8,6 +8,9 @@ public final class NameMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         String text = Masks.text(value);
         char padding = context.padding();
         StringBuilder out = new StringBuilder(text.length());

@@ -26,6 +26,10 @@ public final class DateGeneralizeMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        // A card expiry is a never-partially-revealed category, and its year is most of the value.
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         return switch (value) {
             case LocalDate date -> LocalDate.of(date.getYear(), 1, 1);
             case LocalDateTime dateTime -> LocalDateTime.of(dateTime.getYear(), 1, 1, 0, 0);

@@ -5,7 +5,6 @@ import ch.raph.datamask.api.PII;
 import ch.raph.datamask.application.MaskPlanCompiler;
 import ch.raph.datamask.domain.MaskAction;
 import ch.raph.datamask.domain.MaskPlan;
-import ch.raph.datamask.domain.MaskingException;
 import ch.raph.datamask.domain.MemberPlan;
 import ch.raph.datamask.domain.PiiDescriptor;
 import ch.raph.datamask.domain.PolicyOverrides;
@@ -94,9 +93,10 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
                     .asSpreader(Object[].class, components.length);
             return new MaskPlan(type, members, (original, values) -> canonical.invoke(values));
         } catch (IllegalAccessException | NoSuchMethodException e) {
-            // An inaccessible record — a private record in a module that is not open to us. Passing
-            // it through would leak, so the plan refuses to rebuild and the engine redacts instead.
-            return unrebuildable(type, "record components are not accessible", e);
+            // An inaccessible record — a private record in a module that is not open to us. Nothing
+            // proved it carries no PII, so the plan is marked failed and the engine treats every
+            // value of the type as a structural failure: redacted or thrown, never passed through.
+            return MaskPlan.failed(type, "record components are not accessible (" + e.getMessage() + ")");
         }
     }
 
@@ -123,7 +123,7 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
                                 noMaskOn(type, field))));
             }
         } catch (IllegalAccessException e) {
-            return unrebuildable(type, "fields are not accessible", e);
+            return MaskPlan.failed(type, "fields are not accessible (" + e.getMessage() + ")");
         }
 
         return new MaskPlan(type, members, rebuilderFor(type, fields, lookup));
@@ -267,18 +267,18 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
         }
     }
 
-    private static MaskPlan unrebuildable(Class<?> type, String reason, Throwable cause) {
-        return new MaskPlan(type, List.of(), unrebuildableRebuilder(type, reason + ": " + cause.getMessage()));
-    }
-
+    /**
+     * A rebuilder for a type whose members are readable but that offers no way to build a copy. The
+     * members stay in the plan, so a PII-free instance still passes through the no-change
+     * short-circuit; only when something actually changed does this throw — a plain runtime
+     * exception rather than a {@code MaskingException}, so the engine degrades it per the failure
+     * policy (redact under REDACT, surface under THROW) instead of crashing the caller.
+     */
     private static ValueRebuilder unrebuildableRebuilder(Class<?> type, String reason) {
         return (original, values) -> {
-            throw new MaskingException(
-                    type.getName(),
-                    "cannot rebuild a masked copy because " + reason
-                            + ". Use a record, add a no-argument or all-arguments constructor, "
-                            + "or mask at serialisation time with the Jackson module instead",
-                    null);
+            throw new IllegalStateException("cannot rebuild a masked copy of " + type.getName() + " because " + reason
+                    + ". Use a record, add a no-argument or all-arguments constructor, "
+                    + "or mask at serialisation time with the Jackson module instead");
         };
     }
 }
