@@ -23,5 +23,11 @@
  * <p>{@link ch.raph.datamask.kafka.RecordMasker} is the masking itself, for anywhere else the same job
  * comes up. {@link ch.raph.datamask.kafka.DataMaskKafka} is where a plugin Kafka built from a class
  * name finds the {@code DataMask} it should use.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.kafka;
+
+import org.jspecify.annotations.NullMarked;

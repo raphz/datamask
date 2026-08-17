@@ -250,7 +250,7 @@ public final class MaskingEngine {
                 if (index >= policy.maxCollectionElements()) {
                     // Bounded on purpose: a runaway collection must not turn a log statement into an
                     // outage. Dropping the tail discloses nothing, unlike passing it through unmasked.
-                    observer.onDepthLimitExceeded(path + "[" + index + "]");
+                    observer.onCollectionTruncated(path, index);
                     changed = true;
                     break;
                 }
@@ -284,7 +284,7 @@ public final class MaskingEngine {
         boolean changed = false;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             if (index >= policy.maxCollectionElements()) {
-                observer.onDepthLimitExceeded(path + "{" + index + "}");
+                observer.onCollectionTruncated(path, index);
                 changed = true;
                 break;
             }
@@ -456,13 +456,18 @@ public final class MaskingEngine {
 
     private Object apply(Object value, PiiDescriptor descriptor, Class<?> declaredType, String path) {
         if (descriptor.strategy() == MaskStrategy.SCAN && !descriptor.hasCustomMasker()) {
-            return sanitizer.sanitize(value.toString(), path);
+            // Declared for scanning, so its findings are the design working rather than a warning.
+            return sanitizer.sanitizeDeclared(value.toString(), path);
         }
 
         Masker masker = descriptor.hasCustomMasker()
                 ? maskers.forType(descriptor.maskerType())
                 : maskers.forStrategy(descriptor.strategy());
-        if (!masker.supports(declaredType)) {
+        // The runtime class, not the declared one. A member declared Object or CharSequence says
+        // nothing about what a masker has to handle, and a masker answering "no" is sent to
+        // redaction — so asking about the declared type redacts values that would have masked
+        // properly. The declared type still goes to the context: that is what the result has to fit.
+        if (!masker.supports(value.getClass())) {
             masker = maskers.redacting();
         }
         return masker.mask(value, contexts.create(descriptor, descriptor.strategy(), path, declaredType));
@@ -520,9 +525,9 @@ public final class MaskingEngine {
         observer.onFailure(path, failure);
         return switch (policy.failureMode()) {
             case REDACT -> policy.redactionPlaceholder();
-            case THROW -> throw new MaskingException(path, "masker failed", failure);
+            case THROW -> throw MaskingException.atPath(path, "masker failed", failure);
             case PASS_THROUGH ->
-                throw new MaskingException(path, "PASS_THROUGH would disclose the value that failed to mask", failure);
+                throw MaskingException.atPath(path, "PASS_THROUGH would disclose the value that failed to mask", failure);
         };
     }
 
@@ -530,7 +535,7 @@ public final class MaskingEngine {
         observer.onFailure(path, failure);
         return switch (policy.failureMode()) {
             case REDACT -> null;
-            case THROW -> throw new MaskingException(path, "could not build a masked copy", failure);
+            case THROW -> throw MaskingException.atPath(path, "could not build a masked copy", failure);
             case PASS_THROUGH -> original;
         };
     }

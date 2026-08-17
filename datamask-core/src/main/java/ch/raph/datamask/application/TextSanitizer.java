@@ -41,8 +41,31 @@ public final class TextSanitizer {
         this.observer = observer;
     }
 
-    /** Returns the text with every detected value masked, or the same instance when nothing matched. */
+    /**
+     * Returns the text with every detected value masked, or the same instance when nothing matched.
+     *
+     * <p>For text nobody declared as such, which is why every finding reaches
+     * {@link MaskingObserver#onUnannotatedPii} — a hit here means a field is carrying personal data
+     * its author did not know about. Text that <em>was</em> declared for scanning goes through
+     * {@link #sanitizeDeclared} instead, so it does not dilute that signal.
+     *
+     * <p>{@code null} in, {@code null} out.
+     */
     public String sanitize(CharSequence text, String path) {
+        return sanitize(text, path, false);
+    }
+
+    /**
+     * The same, for a value explicitly declared as free text — a {@code FREEFORM_TEXT} category or a
+     * {@code SCAN} strategy. Findings are reported to {@link MaskingObserver#onScanned}: the
+     * scanner doing its declared job is not the same event as PII turning up where nobody expected
+     * it, and reporting both as the latter is what makes an alert on it unusable.
+     */
+    public String sanitizeDeclared(CharSequence text, String path) {
+        return sanitize(text, path, true);
+    }
+
+    private String sanitize(CharSequence text, String path, boolean declared) {
         if (text == null || text.isEmpty() || detectors.isEmpty()) {
             return text == null ? null : text.toString();
         }
@@ -58,7 +81,11 @@ public final class TextSanitizer {
             out.append(text, cursor, finding.start());
             out.append(maskSpan(text.subSequence(finding.start(), finding.end()).toString(), finding, path));
             cursor = finding.end();
-            observer.onUnannotatedPii(path, finding.category(), finding.detector());
+            if (declared) {
+                observer.onScanned(path, finding.category(), finding.detector());
+            } else {
+                observer.onUnannotatedPii(path, finding.category(), finding.detector());
+            }
         }
         out.append(text, cursor, text.length());
         return out.toString();
@@ -72,8 +99,14 @@ public final class TextSanitizer {
      * list order in {@code Detectors.defaults()} is the priority. A finding that overlaps a kept
      * one but extends past it is not dropped whole: its uncovered tail is text a detector
      * classified as PII, so it is kept as a low-confidence fragment and masked too.
+     *
+     * <p>Null or empty text has no findings, rather than being a way to get a {@code
+     * NullPointerException} out of an auditing call.
      */
     public List<PiiFinding> scan(CharSequence text) {
+        if (text == null || text.isEmpty()) {
+            return List.of();
+        }
         List<PiiFinding> all = new ArrayList<>();
         for (PiiDetector detector : detectors) {
             all.addAll(detector.detect(text));

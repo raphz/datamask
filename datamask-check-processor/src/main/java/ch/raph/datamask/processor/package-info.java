@@ -12,5 +12,11 @@
  * <p>A new check is a class in this package with a {@code check} method and one line in the
  * processor. Diagnostics name the path and the type and never a value, the same rule
  * {@code MaskingException} follows.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.processor;
+
+import org.jspecify.annotations.NullMarked;

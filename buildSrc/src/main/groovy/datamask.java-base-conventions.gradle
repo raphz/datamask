@@ -34,6 +34,19 @@ tasks.withType(Javadoc).configureEach {
 }
 
 dependencies {
+    // JSpecify's nullness annotations, on every module so `@NullMarked` package-info files and the
+    // `@Nullable` positions they force can be written anywhere in the library.
+    //
+    // compileOnly, not api: the annotations have to be invisible in every published POM. datamask-api
+    // claims zero dependencies so a domain module can carry @PII without taking on anything, and that
+    // claim is load-bearing — it is why ModuleDependencyTest holds datamask-api to the JDK. Nothing
+    // reads these at runtime (a checker reads them at compile time, from the class files), and a
+    // missing annotation type is simply skipped by reflection, so leaving them off the runtime
+    // classpath costs nothing. JSpecify's own docs recommend shipping the jar rather than hiding it;
+    // that recommendation is overridden here, deliberately, by the zero-dependency guarantee.
+    compileOnly libs.findLibrary('jspecify').get()
+    testCompileOnly libs.findLibrary('jspecify').get()
+
     testImplementation platform(libs.findLibrary('junit-bom').get())
     testImplementation libs.findLibrary('junit-jupiter').get()
     testImplementation libs.findLibrary('assertj-core').get()

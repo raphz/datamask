@@ -4,6 +4,11 @@ plugins {
 
 description = 'Annotation processor that generates mask plans at build time, replacing runtime reflection.'
 
+// The derived name would be ch.raph.datamask.build.processor; the module ships
+// ch.raph.datamask.processor.plan, and it must not collide with datamask-check-processor's
+// ch.raph.datamask.processor either.
+automaticModuleName = 'ch.raph.datamask.processor.plan'
+
 dependencies {
     // The annotations, and nothing else — the same rule the check processor follows. The generated
     // code names datamask-core types, but this processor only writes those names as text, so the

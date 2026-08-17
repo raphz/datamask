@@ -2,8 +2,10 @@ package ch.raph.datamask.application;
 
 import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.Masker;
+import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.domain.MaskingPolicy;
+import ch.raph.datamask.domain.PiiDescriptor;
 import ch.raph.datamask.domain.PiiDetector;
 import ch.raph.datamask.domain.PiiFinding;
 import ch.raph.datamask.domain.PolicyOverrides;
@@ -67,12 +69,40 @@ public final class DataMask {
         return (T) engine.mask(value);
     }
 
-    /** Masks the PII inside a string and leaves the surrounding text readable. */
-    public String maskText(CharSequence text) {
-        return engine.maskText(text, "text");
+    /**
+     * Masks one value against a category the caller already knows, without needing an annotated
+     * type to hang it on — a header, a query parameter, a value pulled out of a map.
+     *
+     * <p>The category decides the strategy, exactly as {@code @PII(category = …)} on a field would.
+     */
+    public Object maskValue(Object value, PiiCategory category) {
+        return maskValue(value, category, "value");
     }
 
-    /** Reports the PII in a string without changing it — for auditing what a payload contains. */
+    /**
+     * The same, with the path that reaches {@link MaskingObserver}. Worth passing: the observer
+     * signal is only actionable if it says which value it was about.
+     */
+    public Object maskValue(Object value, PiiCategory category, String path) {
+        Objects.requireNonNull(category, "category");
+        Class<?> declaredType = value == null ? Object.class : value.getClass();
+        return engine.maskDeclared(value, PiiDescriptor.of(category), declaredType, path);
+    }
+
+    /** Masks the PII inside a string and leaves the surrounding text readable. Null in, null out. */
+    public String maskText(CharSequence text) {
+        return maskText(text, "text");
+    }
+
+    /** The same, with the path reported to {@link MaskingObserver#onUnannotatedPii}. */
+    public String maskText(CharSequence text, String path) {
+        return engine.maskText(text, path);
+    }
+
+    /**
+     * Reports the PII in a string without changing it — for auditing what a payload contains.
+     * Null or empty text has no findings.
+     */
     public List<PiiFinding> scan(CharSequence text) {
         return engine.sanitizer().scan(text);
     }
@@ -207,14 +237,33 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * Adds a detector after the built-in ones, so it only classifies text no built-in claimed.
+         *
+         * <p>Order is priority: overlapping findings are resolved earliest-start, then longest, then
+         * by position in this list. Use {@link #detectorFirst} when the point of the detector is
+         * that it knows better than a built-in.
+         */
         public Builder detector(PiiDetector detector) {
-            if (this.detectors == null) {
-                this.detectors = new ArrayList<>(Detectors.defaults());
-            } else {
-                this.detectors = new ArrayList<>(this.detectors);
-            }
-            this.detectors.add(detector);
+            mutableDetectors().add(Objects.requireNonNull(detector, "detector"));
             return this;
+        }
+
+        /**
+         * Adds a detector ahead of the built-in ones, so it wins any tie against them.
+         *
+         * <p>This is what an institution-specific format needs. A contract reference that happens to
+         * pass Luhn would otherwise be reported and masked as a payment card for as long as the
+         * built-in detector is consulted first, and appending could never change that.
+         */
+        public Builder detectorFirst(PiiDetector detector) {
+            mutableDetectors().addFirst(Objects.requireNonNull(detector, "detector"));
+            return this;
+        }
+
+        private List<PiiDetector> mutableDetectors() {
+            detectors = new ArrayList<>(detectors != null ? detectors : Detectors.defaults());
+            return detectors;
         }
 
         /** Replaces a built-in strategy, for an institution-specific account or reference format. */

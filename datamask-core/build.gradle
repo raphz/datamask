@@ -4,6 +4,12 @@ plugins {
 
 description = 'The masking engine: plan compilation, built-in strategies, PII detectors and policy.'
 
+// The derived ch.raph.datamask.core is kept even though no package is named that: this module ships
+// three sibling packages (domain, application, infrastructure) and no single one of them can stand
+// for the module. It is the one module name that is an identity rather than a package, which is fine
+// for an automatic module and is what a future module-info would be called too.
+automaticModuleName = 'ch.raph.datamask.core'
+
 dependencies {
     api project(':datamask-api')
 }

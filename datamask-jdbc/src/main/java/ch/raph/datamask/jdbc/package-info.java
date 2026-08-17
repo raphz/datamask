@@ -10,5 +10,11 @@
  * exception's message, so it travels into the stack trace, the log and the error tracker. Unlike a
  * field on a DTO there is no annotation to put on it and no obvious place to look, which is why it
  * survives in systems that mask everything else.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.jdbc;
+
+import org.jspecify.annotations.NullMarked;

@@ -10,5 +10,11 @@
  * see more than one integration at a time. Nothing here is a masking decision — every decision has
  * already been made in {@code datamask-core} or in the integration module, and this package only
  * decides what exists.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.spring;
+
+import org.jspecify.annotations.NullMarked;

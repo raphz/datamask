@@ -4,6 +4,12 @@ plugins {
 
 description = 'The one dependency a Spring Boot application adds to get DataMask wired everywhere.'
 
+// A starter has no classes, so there is no package to match; the derived
+// ch.raph.datamask.spring.boot.starter is kept as its identity. It still gets a name because the jar
+// is published and would otherwise be an automatic module named after its file, and because the name
+// must not collide with datamask-spring-boot-autoconfigure's ch.raph.datamask.spring.
+automaticModuleName = 'ch.raph.datamask.spring.boot.starter'
+
 dependencies {
     api project(':datamask-core')
     api project(':datamask-spring-boot-autoconfigure')

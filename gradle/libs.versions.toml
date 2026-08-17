@@ -13,6 +13,8 @@ micrometer = "1.17.0"
 springBoot = "4.1.0"
 jakartaPersistence = "3.2.0"
 postgresql = "42.7.11"
+# Annotations only, and compileOnly everywhere, so this never reaches a published POM.
+jspecify = "1.0.1"
 testcontainers = "2.0.5"
 junit = "6.0.3"
 assertj = "3.27.7"
@@ -40,6 +42,7 @@ opentelemetry-api = { module = "io.opentelemetry:opentelemetry-api", version.ref
 micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
 jakarta-persistence = { module = "jakarta.persistence:jakarta.persistence-api", version.ref = "jakartaPersistence" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 
 spring-boot = { module = "org.springframework.boot:spring-boot", version.ref = "springBoot" }
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure", version.ref = "springBoot" }

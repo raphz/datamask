@@ -11,5 +11,11 @@
  * nobody re-reads. An exception message quotes the row that failed to insert. All four are handled
  * here, before the event reaches an appender — so a pattern layout, a JSON encoder and a log shipper
  * all see the same masked event, and appenders that were already configured are untouched.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.logback;
+
+import org.jspecify.annotations.NullMarked;

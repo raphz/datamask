@@ -40,6 +40,24 @@ class ModuleDependencyTest {
     /** {@code javax} covers the parts of the platform that never moved out of it, such as {@code javax.crypto}. */
     private static final List<String> JDK = List.of("java..", "javax..");
 
+    /**
+     * JSpecify's nullness annotations, allowed in every module including datamask-api — whose rule is
+     * otherwise "the JDK and nothing else". Every package carries a {@code @NullMarked}
+     * {@code package-info}, and that annotation has runtime retention, so {@code org.jspecify.annotations}
+     * is in the bytecode of every module whether or not any signature mentions it.
+     *
+     * <p>This does not weaken the guarantee the datamask-api rule exists for. JSpecify is annotations and
+     * nothing else, it is {@code compileOnly} in the conventions so it appears in no published POM, and
+     * reflection skips an annotation whose type is absent — so datamask-api still puts nothing on an
+     * application's runtime classpath. What the allowance buys is the nullness contract stated in code
+     * where a checker can hold the library to it, instead of in prose where only a reader can.
+     */
+    private static final List<String> JSPECIFY = List.of("org.jspecify..");
+
+    /** What every module may depend on regardless of its own rule: the platform, plus the nullness annotations. */
+    private static final List<String> BASELINE =
+            Stream.concat(JDK.stream(), JSPECIFY.stream()).toList();
+
     /** The four packages that make up datamask-api and datamask-core. */
     private static final List<String> CORE = List.of(API, DOMAIN, APPLICATION, INFRASTRUCTURE);
 
@@ -92,14 +110,14 @@ class ModuleDependencyTest {
     @DisplayName("datamask-api depends on nothing but the JDK, so a domain class can carry @PII without "
             + "dragging the masking engine into its build")
     void apiDependsOnNothing() {
-        onlyDependOn(List.of(API), and(JDK, API));
+        onlyDependOn(List.of(API), and(BASELINE, API));
     }
 
     @Test
     @DisplayName("the domain knows only the annotations, never the use cases or the adapters, which is what "
             + "keeps the masking vocabulary independent of how masking is carried out")
     void domainDependsInwardsOnly() {
-        onlyDependOn(List.of(DOMAIN), and(JDK, API, DOMAIN));
+        onlyDependOn(List.of(DOMAIN), and(BASELINE, API, DOMAIN));
     }
 
     @Test
@@ -109,7 +127,7 @@ class ModuleDependencyTest {
         // application -> infrastructure is deliberate and stays inside the core: DataMask.Builder and
         // MaskerRegistry are the composition root, and wiring the default maskers, detectors, key and
         // vault is precisely their job. What this rule forbids is the core reaching outside itself.
-        onlyDependOn(List.of(DOMAIN, APPLICATION, INFRASTRUCTURE), and(JDK, CORE));
+        onlyDependOn(List.of(DOMAIN, APPLICATION, INFRASTRUCTURE), and(BASELINE, CORE));
     }
 
     @Test
@@ -118,7 +136,7 @@ class ModuleDependencyTest {
     void processorDependsOnTheAnnotationsOnly() {
         // Stricter than an integration row would be: the processor works on javax.lang.model mirrors of
         // @PII, never on the runtime types, so domain and application stay out of the allowance.
-        onlyDependOn(List.of(PROCESSOR), and(JDK, API, PROCESSOR));
+        onlyDependOn(List.of(PROCESSOR), and(BASELINE, API, PROCESSOR));
     }
 
     @Test
@@ -134,7 +152,7 @@ class ModuleDependencyTest {
         List<String> integrationPackages =
                 integrations().stream().map(Integration::basePackage).toList();
         List<String> allowed = and(
-                and(JDK, API, DOMAIN, APPLICATION, SPRING),
+                and(BASELINE, API, DOMAIN, APPLICATION, SPRING),
                 and(
                         integrationPackages,
                         // Boot itself, the SLF4J facade the startup warnings go through, Micrometer for
@@ -154,7 +172,7 @@ class ModuleDependencyTest {
                     // speaks api, domain and application types; reaching into an adapter would couple it to a
                     // masking implementation it has no business knowing about.
                     List<String> allowed = and(
-                            and(JDK, API, DOMAIN, APPLICATION, integration.basePackage()),
+                            and(BASELINE, API, DOMAIN, APPLICATION, integration.basePackage()),
                             integration.frameworkPackages());
                     onlyDependOn(List.of(integration.basePackage()), allowed);
                 }));

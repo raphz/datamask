@@ -68,11 +68,16 @@ public final class DateGeneralizeMasker implements Masker {
         }
     }
 
+    /**
+     * The engine asks about the value's runtime class, so a member declared {@code Object} holding a
+     * {@code LocalDate} is answered on the {@code LocalDate}. There is deliberately no clause
+     * admitting {@code Object} itself: something that is genuinely neither a temporal nor text has
+     * no year to generalise to, and being sent to redaction instead is the fail-closed outcome.
+     */
     @Override
     public boolean supports(Class<?> type) {
         return Temporal.class.isAssignableFrom(type)
                 || java.util.Date.class.isAssignableFrom(type)
-                || CharSequence.class.isAssignableFrom(type)
-                || Object.class.equals(type);
+                || CharSequence.class.isAssignableFrom(type);
     }
 }

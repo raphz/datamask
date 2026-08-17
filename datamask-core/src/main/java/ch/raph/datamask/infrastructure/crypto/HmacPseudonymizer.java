@@ -119,7 +119,7 @@ public final class HmacPseudonymizer implements Pseudonymizer {
             System.arraycopy(digest, 0, truncated, 0, outputBytes);
             return prefix + withKey.id() + ":" + ENCODER.encodeToString(truncated);
         } catch (GeneralSecurityException e) {
-            throw new MaskingException("HMAC-SHA-256 is unavailable in this JVM");
+            throw MaskingException.withoutPath("HMAC-SHA-256 is unavailable in this JVM");
         }
     }
 

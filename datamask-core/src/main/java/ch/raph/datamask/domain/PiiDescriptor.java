@@ -10,6 +10,24 @@ import java.util.Objects;
 /**
  * The fully resolved masking declaration for a single value: what an annotation, a type-level
  * annotation and an external policy collapse into once merged.
+ *
+ * <p>The canonical constructor is <strong>not the API</strong>. Eight positional components mean a
+ * ninth would break every caller, and two of them are a {@code char} and an {@code int} that sit
+ * next to each other, so a transposition compiles. Build one with {@link #of(PiiCategory)} or
+ * {@link #redacting(PiiCategory)} and refine it with the {@code with*} methods; the constructor is
+ * public only because a record's is, and because the compact constructor is where the
+ * never-partially-revealed rule is enforced for every route in.
+ *
+ * @param category    what the value is
+ * @param sensitivity how strictly it is treated; {@link Sensitivity#HIGH} is read as unset and the
+ *                    category decides
+ * @param strategy    how to mask it; {@link MaskStrategy#AUTO} resolves at masking time
+ * @param keep        trailing characters to reveal, or -1 for the category's own default
+ * @param padding     the character a partial mask pads with
+ * @param replacement a fixed string to substitute, when the strategy uses one
+ * @param maskerType  a custom {@link Masker}, or {@code Masker.class} for none
+ * @param purpose     the key-derivation purpose, so pseudonyms issued for one use cannot be joined
+ *                    against another's
  */
 public record PiiDescriptor(
         PiiCategory category,
@@ -62,6 +80,14 @@ public record PiiDescriptor(
                 annotation.purpose());
     }
 
+    /**
+     * The declaration a bare {@code @PII(category = …)} produces: everything left to the category
+     * and to {@link MaskStrategy#AUTO}, which is the style this library recommends.
+     */
+    public static PiiDescriptor of(PiiCategory category) {
+        return new PiiDescriptor(category, Sensitivity.HIGH, MaskStrategy.AUTO, -1, '*', "", Masker.class, "");
+    }
+
     /** A descriptor that fully redacts, used as the fail-closed fallback. */
     public static PiiDescriptor redacting(PiiCategory category) {
         return new PiiDescriptor(category, Sensitivity.HIGH, MaskStrategy.REDACT, 0, '*', "", Masker.class, "");
@@ -86,5 +112,36 @@ public record PiiDescriptor(
 
     public PiiDescriptor withCategory(PiiCategory newCategory) {
         return new PiiDescriptor(newCategory, sensitivity, strategy, keep, padding, replacement, maskerType, purpose);
+    }
+
+    /**
+     * A sensitivity other than {@link Sensitivity#HIGH}, which the compact constructor reads as
+     * unset. Lowering it below the deployment's threshold switches masking of this value off, which
+     * is the point of the dial and the reason it is worth being explicit about.
+     */
+    public PiiDescriptor withSensitivity(Sensitivity newSensitivity) {
+        return new PiiDescriptor(category, newSensitivity, strategy, keep, padding, replacement, maskerType, purpose);
+    }
+
+    /** Trailing characters to reveal, or -1 for the category's default. Ignored by a never-revealed category. */
+    public PiiDescriptor withKeep(int newKeep) {
+        return new PiiDescriptor(category, sensitivity, strategy, newKeep, padding, replacement, maskerType, purpose);
+    }
+
+    public PiiDescriptor withPadding(char newPadding) {
+        return new PiiDescriptor(category, sensitivity, strategy, keep, newPadding, replacement, maskerType, purpose);
+    }
+
+    public PiiDescriptor withReplacement(String newReplacement) {
+        return new PiiDescriptor(category, sensitivity, strategy, keep, padding, newReplacement, maskerType, purpose);
+    }
+
+    public PiiDescriptor withMasker(Class<? extends Masker> newMaskerType) {
+        return new PiiDescriptor(category, sensitivity, strategy, keep, padding, replacement, newMaskerType, purpose);
+    }
+
+    /** The key-derivation purpose: a pseudonym issued under one cannot be joined against another's. */
+    public PiiDescriptor withPurpose(String newPurpose) {
+        return new PiiDescriptor(category, sensitivity, strategy, keep, padding, replacement, maskerType, newPurpose);
     }
 }

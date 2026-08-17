@@ -276,6 +276,12 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
     }
 
     private MaskAction actionFor(Class<?> owner, String name, Class<?> declaredType, PII annotation, NoMask exemption) {
+        // Before the exemption, deliberately: @NoMask is a claim by the code's author that a member
+        // carries nothing worth hiding, and an override is the deployment disagreeing. The
+        // deployment is the one being audited, so it wins.
+        if (overrides.drops(owner, name)) {
+            return MaskAction.DROP;
+        }
         if (exemption != null) {
             return MaskAction.KEEP;
         }

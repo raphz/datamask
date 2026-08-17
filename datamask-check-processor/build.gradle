@@ -4,6 +4,9 @@ plugins {
 
 description = 'Annotation processor that validates @PII usage at compile time.'
 
+// The derived name would be ch.raph.datamask.check.processor; the module ships ch.raph.datamask.processor.
+automaticModuleName = 'ch.raph.datamask.processor'
+
 dependencies {
     implementation project(':datamask-api')
 }

@@ -82,7 +82,7 @@ public final class MaskerRegistry {
         try {
             return type.getDeclaredConstructor().newInstance();
         } catch (ReflectiveOperationException e) {
-            throw new MaskingException(
+            throw MaskingException.atPath(
                     type.getName(),
                     "custom masker needs a public no-argument constructor, or must be registered "
                             + "explicitly on the DataMask builder",
