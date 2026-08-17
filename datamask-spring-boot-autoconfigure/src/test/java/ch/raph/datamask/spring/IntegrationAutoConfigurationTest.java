@@ -231,6 +231,20 @@ class IntegrationAutoConfigurationTest {
         }
 
         @Test
+        @DisplayName("still wraps the DataSource when result-set wrapping is switched off — the two are "
+                + "different switches, and confusing them would leave a pool unmasked")
+        void wrapsWithoutWrappingResultSets() {
+            // What the flag actually does to a fetch is asserted in datamask-jdbc's
+            // ResultSetWrappingTest, against a stub that can return one. What matters here is that
+            // the property reaches the wrapper at all, and that it narrows the wrapping rather than
+            // removing it.
+            withDataSource
+                    .withPropertyValues("datamask.jdbc.wrap-result-sets=false")
+                    .run(context ->
+                            assertThat(context.getBean(DataSource.class)).isInstanceOf(MaskingDataSource.class));
+        }
+
+        @Test
         @DisplayName("offers the sanitizer on its own, for an exception that reached a @ControllerAdvice "
                 + "rather than the driver")
         void exposesTheSanitizer() {

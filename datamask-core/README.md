@@ -223,14 +223,14 @@ A `MaskPlan` is derived per class and cached in a `ClassValue`, so after the fir
 a handful of `MethodHandle` invocations plus one constructor call.
 
 **Scanning used to be the whole cost, and gating the detectors removed most of it.** A clean log line
-through the masking appender went from 11 µs to 0.55 µs, and a PII-free object graph from 12.5 µs to
-1.1 µs. On a log line with an order number and a timestamp in it — which opens four of the twelve
-gates — the figure is 3.4 µs, and that is the one to quote for real text rather than for prose.
+through the masking appender went from 11 µs to 0.53 µs, and a PII-free object graph from 12.5 µs to
+1.0 µs. On a log line with an order number and a timestamp in it — which opens four of the twelve
+gates — the figure is 3.5 µs, and that is the one to quote for real text rather than for prose.
 
 Two things that used to be true and are not any more, because the numbers no longer support them:
 masking a graph with nothing declared cost five times masking one with six declared members
-(12.5 µs against 2.5), so annotating was a throughput argument. The two are now 1.14 µs and 1.21 —
-inside each other's error bars. **Annotate because a declared field is masked correctly whether or
+(12.5 µs against 2.5), so annotating was a throughput argument. The two are now 1.02 µs and 1.19 —
+close enough that the ordering flips between runs. **Annotate because a declared field is masked correctly whether or
 not a detector would have recognised its contents**, which is the argument that was always the real
 one. Numbers and their caveats are in [`datamask-benchmarks`](../datamask-benchmarks/README.md).
 

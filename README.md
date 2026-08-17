@@ -83,6 +83,13 @@ declared as free text produces hits by design, and those are reported separately
 worth having. Every report carries a path that names its source (`kafka:value/payments`,
 `jdbc:param/2`, `logback:com.acme.Ledger/arg0`), so one rule can tell the integrations apart.
 
+Scanning is bounded in both directions that matter. Each detector declares a cheap condition that
+must hold before its pattern runs at all, which is what keeps a clean log line at ~0.5 µs instead of
+~11 µs; and a string longer than `maxTextLength` — 8 192 characters by default — has the remainder
+redacted rather than emitted unscanned, so one oversized payload cannot cost the calling thread
+milliseconds. Both bounds trade output for time and never for disclosure. Measurements are in
+[`datamask-benchmarks`](datamask-benchmarks/README.md).
+
 **Some things are never partially revealed.** A card verification value, a credential or biometric
 data is redacted whole, even if an annotation or a policy asks to keep some of it.
 

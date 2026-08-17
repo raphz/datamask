@@ -119,7 +119,7 @@ and log4j2 did, so **`datamask-benchmarks` now exists** and the deferral is over
 clean `INFO` line through the masking appender against the same event through a plain one, and its
 first result is worth knowing before touching anything on that path: a clean line cost ~11 µs, and
 ~98% of that was the unfiltered regex fan-out in `TextSanitizer`, not the engine. **Gating the
-detectors took that to ~0.55 µs** (~3.4 µs on a log line with digits and colons in it, which is the
+detectors took that to ~0.53 µs** (~3.5 µs on a log line with digits and colons in it, which is the
 figure to quote for real text). See `datamask-benchmarks/README.md`; a performance change to the core
 or to a logging module should come with a before/after from it, and `docs/IMPROVEMENTS.md` holds the
 baseline table both columns live in.

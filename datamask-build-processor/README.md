@@ -31,15 +31,15 @@ whichever request happens to be first. That is exactly where a p99 is measured.
 | GraalVM native image | needs reachability metadata for every masked type | needs none |
 
 **What that is worth, measured.** `datamask-benchmarks` puts cold plan compilation for three types at
-**30.2 µs reflectively against 8.8 µs generated — about 3×**. Steady-state masking through a warm
-plan is **indistinguishable**: 1.12 µs reflective against 1.14 µs generated, both inside their own
+**30.2 µs reflectively against 8.5 µs generated — about 3.5×**. Steady-state masking through a warm
+plan is **indistinguishable**: 1.27 µs reflective against 1.10 µs generated, both inside their own
 error bars. So the row about reading a
 member through a `MethodHandle` is true and does not matter — the JIT flattens the difference long
 before it shows up in a throughput number.
 
 Both warm figures halved when the detector gates landed, and neither moved relative to the other,
 which is the expected shape: that work was content scanning, not member access. The cold pair has an
-error bar larger than its own score — most iterations measure a class that has already been planned —
+error bar of the same order as its own score — most iterations measure a class that has already been planned —
 so trust the ratio and not the digits.
 
 Sell this module on **startup and on GraalVM**, not on throughput. What it buys is the first request

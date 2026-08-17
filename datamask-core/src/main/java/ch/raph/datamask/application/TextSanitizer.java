@@ -247,9 +247,14 @@ public final class TextSanitizer {
     /**
      * What the whole value is, when a single detector matches it end to end. Used to resolve
      * {@link MaskStrategy#AUTO} from a value's own content when nothing else declared it.
+     *
+     * <p>Bounded by {@link MaskingPolicy#maxTextLength()} like {@link #sanitize}, and unlike
+     * {@link #scan}. Both callers treat "no answer" as a reason to redact the whole value, so
+     * declining to classify something the size of a document costs output and never disclosure —
+     * and a value that large is a payload rather than an identifier.
      */
     public Optional<PiiCategory> classify(@Nullable CharSequence text) {
-        if (text == null || text.isEmpty()) {
+        if (text == null || text.isEmpty() || text.length() > policy.maxTextLength()) {
             return Optional.empty();
         }
         String trimmed = text.toString().trim();

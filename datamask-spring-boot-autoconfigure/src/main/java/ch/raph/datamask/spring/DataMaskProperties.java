@@ -184,6 +184,13 @@ public record DataMaskProperties(
      *     collection from turning a log statement into an outage; the dropped elements are absent
      *     from the masked copy rather than passed through, so this too trades output for time and
      *     never for disclosure.
+     * @param maxTextLength How many characters of a string are scanned for PII before the rest is
+     *     redacted unread, overriding the preset's 8192. Scanning is linear in the length of the
+     *     text, so this is the bound that keeps one oversized value — a payload logged whole — from
+     *     costing the calling thread milliseconds. The unscanned tail is replaced by the redaction
+     *     placeholder rather than passed through, so like the two bounds above it trades output for
+     *     time and never for disclosure; raising it costs time on long values and lowering it costs
+     *     output. Each cut reaches MaskingObserver.onTextTruncated.
      * @param scanUnannotatedText Whether strings nobody annotated are scanned for PII — card
      *     numbers, IBANs, AVS numbers, emails, the identifiers among them verified by their check
      *     digits — overriding the preset's setting, on under STRICT and off under RELAXED. Off, an
@@ -204,6 +211,7 @@ public record DataMaskProperties(
             String redactionPlaceholder,
             Integer maxDepth,
             Integer maxCollectionElements,
+            Integer maxTextLength,
             Boolean scanUnannotatedText,
             Boolean maskMapKeys) {
 
@@ -225,6 +233,7 @@ public record DataMaskProperties(
                     redactionPlaceholder != null ? redactionPlaceholder : base.redactionPlaceholder(),
                     maxDepth != null ? maxDepth : base.maxDepth(),
                     maxCollectionElements != null ? maxCollectionElements : base.maxCollectionElements(),
+                    maxTextLength != null ? maxTextLength : base.maxTextLength(),
                     scanUnannotatedText != null ? scanUnannotatedText : base.scanUnannotatedText(),
                     maskMapKeys != null ? maskMapKeys : base.maskMapKeys());
         }

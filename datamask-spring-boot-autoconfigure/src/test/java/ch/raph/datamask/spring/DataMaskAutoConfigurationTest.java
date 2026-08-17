@@ -169,6 +169,7 @@ class DataMaskAutoConfigurationTest {
                             "datamask.policy.redaction-placeholder=[redacted]",
                             "datamask.policy.max-depth=8",
                             "datamask.policy.max-collection-elements=5",
+                            "datamask.policy.max-text-length=256",
                             "datamask.policy.mask-map-keys=true",
                             "datamask.policy.failure-mode=THROW")
                     .run(context -> {
@@ -178,6 +179,7 @@ class DataMaskAutoConfigurationTest {
                         assertThat(policy.redactionPlaceholder()).isEqualTo("[redacted]");
                         assertThat(policy.maxDepth()).isEqualTo(8);
                         assertThat(policy.maxCollectionElements()).isEqualTo(5);
+                        assertThat(policy.maxTextLength()).isEqualTo(256);
                         assertThat(policy.maskMapKeys()).isTrue();
                         assertThat(policy.failureMode()).isEqualTo(FailureMode.THROW);
                     });

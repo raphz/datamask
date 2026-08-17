@@ -82,6 +82,7 @@ Actuator get nothing and notice nothing.
 | `datamask.policy.redaction-placeholder` | preset | What a redacted value becomes. |
 | `datamask.policy.max-depth` | preset | Traversal bound. |
 | `datamask.policy.max-collection-elements` | preset | Collection bound; the tail is dropped. |
+| `datamask.policy.max-text-length` | preset (8192) | How many characters of a string are scanned; the rest is redacted unread. |
 | `datamask.policy.scan-unannotated-text` | preset | Whether free text is scanned for PII nobody declared. |
 | `datamask.policy.mask-map-keys` | preset | Masking a key changes lookup semantics, so this is separate. |
 | `datamask.jackson.enabled` | `true` | |
@@ -89,6 +90,7 @@ Actuator get nothing and notice nothing.
 | `datamask.log4j2.enabled` | `true` | |
 | `datamask.jdbc.enabled` | `true` | |
 | `datamask.jdbc.excluded-beans` | — | Names of `DataSource` beans to leave unwrapped. Each one is logged at startup. |
+| `datamask.jdbc.wrap-result-sets` | `true` | Off, an error surfacing during a fetch reaches the application as the driver threw it. Measured at ~5 ns per forwarded call, so leave it on unless your own read path says otherwise. |
 | `datamask.kafka.enabled` | `true` | |
 | `datamask.metrics.enabled` | `true` | Needs a Micrometer `MeterRegistry` in the context. |
 

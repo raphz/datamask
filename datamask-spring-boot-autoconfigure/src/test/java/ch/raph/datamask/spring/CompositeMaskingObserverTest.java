@@ -48,6 +48,44 @@ class CompositeMaskingObserverTest {
     }
 
     @Test
+    @DisplayName("forwards the three signals that were being dropped: a declared scan, a truncated "
+            + "collection and a truncated string")
+    void forwardsTheSignalsAddedLater() {
+        composite.onScanned("Note#text", PiiCategory.IBAN, "iban");
+        composite.onCollectionTruncated("Portfolio#accounts", 1_000);
+        composite.onTextTruncated("logback:message", 8_192);
+
+        assertThat(first.events)
+                .containsExactly("scanned Note#text", "truncated Portfolio#accounts", "cut logback:message");
+        assertThat(second.events)
+                .containsExactly("scanned Note#text", "truncated Portfolio#accounts", "cut logback:message");
+    }
+
+    @Test
+    @DisplayName("overrides every method the interface declares, because one it does not name is delivered "
+            + "to nobody and looks exactly like a signal that never fired")
+    void overridesEveryMethod() {
+        // The failure this guards against has no symptom: every method on MaskingObserver is
+        // default, so a composite that forgets one compiles, runs, and silently swallows it. That
+        // is what happened to onScanned and onCollectionTruncated when the observer split added
+        // them, and it survived a full green build.
+        List<String> declared = List.of(MaskingObserver.class.getDeclaredMethods()).stream()
+                .filter(method -> method.getName().startsWith("on"))
+                .map(java.lang.reflect.Method::getName)
+                .distinct()
+                .sorted()
+                .toList();
+        List<String> overridden = List.of(CompositeMaskingObserver.class.getDeclaredMethods()).stream()
+                .filter(method -> method.getName().startsWith("on"))
+                .map(java.lang.reflect.Method::getName)
+                .distinct()
+                .sorted()
+                .toList();
+
+        assertThat(overridden).containsExactlyElementsOf(declared);
+    }
+
+    @Test
     @DisplayName("copies the list it was given, so an observer cannot be added behind the engine's back")
     void copiesTheList() {
         List<MaskingObserver> mutable = new ArrayList<>(List.of(first));
@@ -81,6 +119,21 @@ class CompositeMaskingObserverTest {
         @Override
         public void onDepthLimitExceeded(String path) {
             events.add("depth " + path);
+        }
+
+        @Override
+        public void onScanned(String path, PiiCategory category, String detector) {
+            events.add("scanned " + path);
+        }
+
+        @Override
+        public void onCollectionTruncated(String path, int kept) {
+            events.add("truncated " + path);
+        }
+
+        @Override
+        public void onTextTruncated(String path, int scanned) {
+            events.add("cut " + path);
         }
     }
 }

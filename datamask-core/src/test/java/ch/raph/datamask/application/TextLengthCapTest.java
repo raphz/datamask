@@ -127,6 +127,18 @@ class TextLengthCapTest {
     }
 
     @Test
+    @DisplayName("declines to classify an oversized value, which its callers read as a reason to redact it")
+    void classifyIsBoundedToo() {
+        // Both callers — AUTO resolution in the engine, and a JDBC bind parameter — redact when
+        // classify has no answer, so the bound costs output and never disclosure.
+        DataMask capped = capped();
+        String oversized = IBAN + " " + "x".repeat(200);
+
+        assertThat(capped.engine().sanitizer().classify(oversized)).isEmpty();
+        assertThat(capped.engine().sanitizer().classify(IBAN)).contains(PiiCategory.IBAN);
+    }
+
+    @Test
     @DisplayName("applies to a string reached through an object graph, not only to maskText")
     void appliesInsideTheEngine() {
         record Note(String body) {}
