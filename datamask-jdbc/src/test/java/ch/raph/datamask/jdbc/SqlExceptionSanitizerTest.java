@@ -14,10 +14,13 @@ import ch.raph.datamask.jdbc.testdomain.ServerErrors;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.sql.BatchUpdateException;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -228,6 +231,129 @@ class SqlExceptionSanitizerTest {
 
             assertThat((Throwable) sanitizer.sanitize(original)).isSameAs(original);
         }
+
+        @Test
+        @DisplayName("takes the duplicated value out of MySQL's `Duplicate entry '...' for key '...'`, which "
+                + "no detector would have recognised, and keeps the key name")
+        void masksMySqlDuplicateEntry() {
+            SQLException original = new SQLException(
+                    "Duplicate entry 'Mustermann9910' for key 'customer.customer_email_key'", "23000", 1062);
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain("Mustermann9910");
+            assertThat(sanitized.getMessage())
+                    .isEqualTo("Duplicate entry '****' for key 'customer.customer_email_key'");
+            assertThat((Throwable) sanitized).isInstanceOf(SQLIntegrityConstraintViolationException.class);
+        }
+
+        @Test
+        @DisplayName("does the same for MariaDB, whose message carries a connection number in front of it")
+        void masksMariaDbDuplicateEntry() {
+            SQLException original =
+                    new SQLException("(conn=42) Duplicate entry 'Zurcher' for key 'PRIMARY'", "23000", 1062);
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain("Zurcher");
+            assertThat(sanitized.getMessage()).contains("(conn=42)").contains("for key 'PRIMARY'");
+        }
+
+        @Test
+        @DisplayName("takes the value out of an H2 unique violation, where it is quoted inside the statement "
+                + "text rather than after it")
+        void masksH2UniqueViolation() {
+            SQLException original = new SQLException(
+                    "Unique index or primary key violation: \"PUBLIC.CONSTRAINT_INDEX_4 ON "
+                            + "PUBLIC.CUSTOMER(EMAIL) VALUES ('Mustermann9910')\"; SQL statement:\n"
+                            + "insert into customer (email) values (?) [23505-232]",
+                    "23505",
+                    23505);
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain("Mustermann9910");
+            assertThat(sanitized.getMessage())
+                    .contains("Unique index or primary key violation")
+                    .contains("CONSTRAINT_INDEX_4");
+        }
+
+        @Test
+        @DisplayName("takes the value out of an H2 data exception too, where the last quoted span is the "
+                + "value and keeping it would be the leak")
+        void masksH2ValueTooLong() {
+            SQLException original = new SQLException(
+                    "Value too long for column \"EMAIL CHARACTER VARYING(8)\": \"'Mustermann9910' (14)\"; "
+                            + "SQL statement:\ninsert into customer (email) values (?) [22001-232]",
+                    "22001",
+                    22001);
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain("Mustermann9910");
+            assertThat(sanitized.getMessage()).contains("EMAIL CHARACTER VARYING(8)");
+        }
+
+        @Test
+        @DisplayName("keeps a column name that is all the message quotes, because an error naming nothing is "
+                + "an error nobody can act on")
+        void keepsAQuotedColumnName() {
+            SQLException original = new SQLException("Data truncation: Data too long for column 'email' at row 1");
+
+            assertThat((Throwable) sanitizer.sanitize(original)).isSameAs(original);
+        }
+
+        @Test
+        @DisplayName("leaves quoted spans alone outside the two SQL state classes that are about a value, so "
+                + "a syntax error still names the column it could not find")
+        void redactsQuotedSpansOnlyWhereAValueIsExpected() {
+            SQLException original = new SQLException("Unknown column 'emial' in 'field list'", "42S22", 1054);
+
+            assertThat((Throwable) sanitizer.sanitize(original)).isSameAs(original);
+        }
+    }
+
+    @Nested
+    @DisplayName("from a batch")
+    class Batches {
+
+        private static final int[] COUNTS = {1, Statement.EXECUTE_FAILED, 1};
+
+        @Test
+        @DisplayName("keeps the update counts, which say which entry of the batch failed — a row position, "
+                + "not row data — and which Hibernate and Spring both read")
+        void keepsUpdateCounts() {
+            BatchUpdateException original = new BatchUpdateException(
+                    "Batch entry 0 insert into customer (email) values ('" + EMAIL + "') was aborted: "
+                            + "ERROR: duplicate key value violates unique constraint \"customer_email_key\"\n"
+                            + "  Detail: Key (email)=(" + EMAIL + ") already exists.",
+                    "23505",
+                    0,
+                    COUNTS);
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain(EMAIL);
+            assertThat((Throwable) sanitized).isInstanceOf(BatchUpdateException.class);
+            assertThat(((BatchUpdateException) sanitized).getUpdateCounts()).isEqualTo(COUNTS);
+            assertThat(((BatchUpdateException) sanitized).getLargeUpdateCounts())
+                    .containsExactly(1L, -3L, 1L);
+            assertThat(sanitized.getSQLState()).isEqualTo("23505");
+        }
+
+        @Test
+        @DisplayName("keeps them while replacing a cause that carried the value, which is the case where the "
+                + "counts have to be handed to the constructor rather than set afterwards")
+        void keepsUpdateCountsWhileSanitisingTheCause() {
+            BatchUpdateException original =
+                    new BatchUpdateException("batch failed", "23505", 0, COUNTS, ServerErrors.uniqueViolation(EMAIL));
+
+            SQLException sanitized = sanitizer.sanitize(original);
+
+            assertThat(everythingVisible(sanitized)).doesNotContain(EMAIL);
+            assertThat(((BatchUpdateException) sanitized).getUpdateCounts()).isEqualTo(COUNTS);
+            assertThat(sanitized.getCause()).isInstanceOf(PSQLException.class).isNotSameAs(original.getCause());
+        }
     }
 
     @Nested
@@ -361,6 +487,13 @@ class SqlExceptionSanitizerTest {
     @DisplayName("reporting to the observer")
     class Observing {
 
+        /**
+         * The module's path grammar: {@code <module>:<site>[/<detail>]}. The scheme is what lets a
+         * rule downstream tell a JDBC leak from a Kafka or a Jackson one without parsing prose, so
+         * it is asserted rather than left to inspection.
+         */
+        private static final Pattern JDBC_PATH = Pattern.compile("jdbc:(error|param)(/[A-Za-z0-9]+)*");
+
         @Test
         @DisplayName("reports PII found in a database error as unannotated, which is the signal that "
                 + "production data reached a log line")
@@ -382,7 +515,31 @@ class SqlExceptionSanitizerTest {
                             .message("invalid input syntax for type integer: \"" + IBAN + "\"")
                             .build());
 
-            assertThat(reported).anyMatch(entry -> entry.contains("IBAN"));
+            assertThat(reported).anyMatch(entry -> entry.startsWith("jdbc:error/message ") && entry.contains("IBAN"));
+        }
+
+        @Test
+        @DisplayName("keeps a database error on onUnannotatedPii rather than onScanned: nobody declared a "
+                + "server message as free text, so a hit in one is still the alert-worthy signal")
+        void doesNotDowngradeADatabaseErrorToOnScanned() {
+            List<String> scanned = new ArrayList<>();
+            DataMask observed = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onScanned(String path, PiiCategory category, String detector) {
+                            scanned.add(path);
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(observed)
+                    .sanitize(ServerErrors.builder()
+                            .severity("ERROR")
+                            .state("22P02")
+                            .message("invalid input syntax for type integer: \"" + IBAN + "\"")
+                            .build());
+
+            assertThat(scanned).isEmpty();
         }
 
         @Test
@@ -400,7 +557,91 @@ class SqlExceptionSanitizerTest {
 
             new SqlExceptionSanitizer(observed).sanitize(ServerErrors.uniqueViolation(EMAIL));
 
-            assertThat(reported).anyMatch(entry -> entry.contains("UNSPECIFIED") && entry.contains("REDACT"));
+            assertThat(reported)
+                    .anyMatch(entry -> entry.startsWith("jdbc:error/detail ")
+                            && entry.contains("UNSPECIFIED")
+                            && entry.contains("REDACT"));
+        }
+
+        @Test
+        @DisplayName("prefixes every site it names with the jdbc scheme, down every chain it walks, so a "
+                + "rule keyed on the prefix can tell this module's findings from another's")
+        void namesEverySiteWithTheModuleScheme() {
+            SQLException head =
+                    new SQLException("could not execute statement", "23505", 0, ServerErrors.uniqueViolation(EMAIL));
+            head.setNextException(new SQLException("Duplicate entry '" + EMAIL + "' for key 'k'", "23000", 1062));
+            head.addSuppressed(new SQLException("rollback abandoned for " + IBAN, "40001"));
+
+            List<String> paths = recordedPaths(head);
+
+            assertThat(paths)
+                    .isNotEmpty()
+                    .allMatch(path -> JDBC_PATH.matcher(path).matches(), "jdbc:<site>[/<detail>]");
+            assertThat(paths)
+                    .anyMatch(path -> path.startsWith("jdbc:error/next"))
+                    .anyMatch(path -> path.startsWith("jdbc:error/suppressed"))
+                    .anyMatch(path -> path.startsWith("jdbc:error/cause"));
+        }
+
+        @Test
+        @DisplayName("reports the failure of the sanitiser itself against the error site, not the empty "
+                + "string, so the redaction that follows is attributable")
+        void namesTheSiteOfItsOwnFailure() {
+            List<String> reported = new ArrayList<>();
+            DataMask broken = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onFailure(String path, Throwable error) {
+                            reported.add(path);
+                        }
+                    })
+                    .detector(new PiiDetector() {
+                        @Override
+                        public String name() {
+                            return "broken";
+                        }
+
+                        @Override
+                        public List<PiiFinding> detect(CharSequence text) {
+                            throw new IllegalStateException("detector is broken");
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(broken).sanitize(ServerErrors.uniqueViolation(EMAIL));
+
+            assertThat(reported).contains("jdbc:error");
+        }
+
+        /** Every path reported through any callback while sanitising one error and its chains. */
+        private static List<String> recordedPaths(SQLException head) {
+            List<String> paths = new ArrayList<>();
+            DataMask observed = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onUnannotatedPii(String path, PiiCategory category, String detector) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onScanned(String path, PiiCategory category, String detector) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onFailure(String path, Throwable error) {
+                            paths.add(path);
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(observed).sanitize(head);
+            return paths;
         }
     }
 }

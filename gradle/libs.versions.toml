@@ -3,6 +3,8 @@
 [versions]
 slf4j = "2.0.18"
 logback = "1.5.34"
+# Not Boot-managed; the encoder is optional in datamask-logback and only its marker API is compiled against.
+logstashLogbackEncoder = "8.1"
 log4j2 = "2.25.4"
 jackson = "3.1.4"
 kafka = "4.2.1"
@@ -11,7 +13,12 @@ micrometer = "1.17.0"
 springBoot = "4.1.0"
 jakartaPersistence = "3.2.0"
 postgresql = "42.7.11"
+# Annotations only, and compileOnly everywhere, so this never reaches a published POM.
+jspecify = "1.0.1"
 testcontainers = "2.0.5"
+# Not Boot-managed, and deliberately so: JMH reaches datamask-benchmarks only, which is never
+# published, so it can never appear in an application's dependency graph.
+jmh = "1.37"
 junit = "6.0.3"
 assertj = "3.27.7"
 archunit = "1.4.1"
@@ -28,6 +35,7 @@ axion-release = { id = "pl.allegro.tech.build.axion-release", version.ref = "axi
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 logback-core = { module = "ch.qos.logback:logback-core", version.ref = "logback" }
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstashLogbackEncoder" }
 log4j2-api = { module = "org.apache.logging.log4j:log4j-api", version.ref = "log4j2" }
 log4j2-core = { module = "org.apache.logging.log4j:log4j-core", version.ref = "log4j2" }
 jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
@@ -37,6 +45,7 @@ opentelemetry-api = { module = "io.opentelemetry:opentelemetry-api", version.ref
 micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
 jakarta-persistence = { module = "jakarta.persistence:jakarta.persistence-api", version.ref = "jakartaPersistence" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 
 spring-boot = { module = "org.springframework.boot:spring-boot", version.ref = "springBoot" }
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure", version.ref = "springBoot" }
@@ -46,6 +55,15 @@ spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-star
 # which would drag Mockito onto the test classpath of a build that deliberately does without it.
 spring-boot-test = { module = "org.springframework.boot:spring-boot-test", version.ref = "springBoot" }
 spring-boot-actuator = { module = "org.springframework.boot:spring-boot-actuator", version.ref = "springBoot" }
+# Boot's real metrics auto-configuration chain (MetricsAutoConfiguration, the export
+# auto-configurations, CompositeMeterRegistryAutoConfiguration). Test-only: the ordering bug it
+# guards against is invisible when a MeterRegistry is registered as a plain user bean.
+spring-boot-micrometer-metrics = { module = "org.springframework.boot:spring-boot-micrometer-metrics", version.ref = "springBoot" }
+
+# The benchmark harness and the annotation processor that writes its generated runners. Both are
+# confined to datamask-benchmarks.
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }

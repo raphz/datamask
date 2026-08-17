@@ -88,28 +88,56 @@ class GeneratedMaskPlanCompilerTest {
     class Defaults {
 
         @Test
-        @DisplayName("hands back the plain reflective compiler when nothing was generated, so an application "
-                + "without the processor pays nothing for the indirection")
+        @DisplayName("answers reflectively for every type when nothing was generated, and holds no plan at all — "
+                + "which is what an application without the processor is entitled to")
         void reflectiveWhenNothingIsGenerated() {
-            MaskPlanCompiler compiler =
+            GeneratedMaskPlanCompiler compiler = (GeneratedMaskPlanCompiler)
                     GeneratedMaskPlanCompiler.orReflective(PolicyOverrides.none(), noServicesAtAll());
 
-            assertThat(compiler).isInstanceOf(ReflectiveMaskPlanCompiler.class);
+            assertThat(compiler.planFor(Banking.Card.class).members())
+                    .extracting(MemberPlan::name)
+                    .containsExactly("number", "cvv", "holder");
+            assertThat(compiler.generatedPlanCount()).isZero();
         }
 
         @Test
-        @DisplayName("refuses to use generated plans at all once policy overrides are configured: a plan resolved "
-                + "at compile time cannot know about them, and an ignored override is an unmasked value")
-        void reflectiveWhenOverridesAreConfigured() {
+        @DisplayName("gives up the generated plan for a type an override touches: a plan resolved at compile "
+                + "time cannot know about an override, and an ignored override is an unmasked value")
+        void reflectiveForAnOverriddenType() {
             PolicyOverrides overrides = new PolicyOverrides(
                     Map.of(
                             Banking.Portfolio.class.getName() + "#reference",
                             PiiDescriptor.redacting(PiiCategory.CUSTOMER_ID)),
                     Map.of());
 
-            MaskPlanCompiler compiler = GeneratedMaskPlanCompiler.orReflective(overrides);
+            GeneratedMaskPlanCompiler compiler =
+                    (GeneratedMaskPlanCompiler) GeneratedMaskPlanCompiler.orReflective(overrides);
+            compiler.planFor(Banking.Portfolio.class);
 
-            assertThat(compiler).isInstanceOf(ReflectiveMaskPlanCompiler.class);
+            assertThat(compiler.generatedPlanCount()).isZero();
+        }
+
+        @Test
+        @DisplayName("keeps the generated plans an override does not touch, instead of turning build-time "
+                + "masking off across the whole application because one DTO has one")
+        void keepsUntouchedGeneratedPlans(@TempDir Path classpathEntry) throws Exception {
+            ClassLoader loader = serviceLoaderFor(classpathEntry, DeclaredPlan.class, DeclaredCardPlan.class);
+            PolicyOverrides overrides = new PolicyOverrides(
+                    Map.of(
+                            Banking.Customer.class.getName() + "#country",
+                            PiiDescriptor.redacting(PiiCategory.CUSTOMER_ID)),
+                    Map.of());
+
+            MaskPlanCompiler compiler = GeneratedMaskPlanCompiler.orReflective(overrides, loader);
+
+            // Customer is overridden, so it goes back to reflection and the override is honoured.
+            assertThat(compiler.planFor(Banking.Customer.class).members())
+                    .extracting(MemberPlan::name)
+                    .doesNotContain("generated");
+            // Card is untouched, so it keeps the plan the build produced.
+            assertThat(compiler.planFor(Banking.Card.class).members())
+                    .extracting(MemberPlan::name)
+                    .containsExactly("generated");
         }
 
         @Test
@@ -169,6 +197,55 @@ class GeneratedMaskPlanCompilerTest {
             assertThat(compiler.planFor(Banking.Customer.class).members())
                     .extracting(MemberPlan::name)
                     .containsExactly("generated");
+        }
+
+        @Test
+        @DisplayName("starts anyway when the service file names a class that is gone, rather than letting a "
+                + "stale registration take the application down")
+        void aStaleServiceRegistrationDoesNotStopStartup(@TempDir Path classpathEntry) throws Exception {
+            Path services = classpathEntry.resolve("META-INF/services");
+            Files.createDirectories(services);
+            // ServiceLoader raises ServiceConfigurationError from the iterator itself here, before
+            // any provider is handed over — outside the loop body, where a guard around the call to
+            // plan() could never see it. That one error used to escape and fail startup.
+            Files.writeString(
+                    services.resolve(GeneratedMaskPlan.class.getName()),
+                    "ch.raph.datamask.generated.Vanished_MaskPlan\n");
+
+            ClassLoader loader = new URLClassLoader(
+                    new URL[] {classpathEntry.toUri().toURL()}, getClass().getClassLoader());
+
+            GeneratedMaskPlanCompiler compiler =
+                    (GeneratedMaskPlanCompiler) GeneratedMaskPlanCompiler.orReflective(PolicyOverrides.none(), loader);
+
+            assertThat(compiler.generatedPlanCount()).isZero();
+            assertThat(compiler.planFor(Banking.Card.class).members()).hasSize(3);
+        }
+    }
+
+    private static ClassLoader serviceLoaderFor(Path classpathEntry, Class<?>... plans) throws Exception {
+        Path services = classpathEntry.resolve("META-INF/services");
+        Files.createDirectories(services);
+        StringBuilder registrations = new StringBuilder();
+        for (Class<?> plan : plans) {
+            registrations.append(plan.getName()).append('\n');
+        }
+        Files.writeString(services.resolve(GeneratedMaskPlan.class.getName()), registrations.toString());
+        return new URLClassLoader(
+                new URL[] {classpathEntry.toUri().toURL()}, GeneratedMaskPlanCompilerTest.class.getClassLoader());
+    }
+
+    /** A second generated plan, so a test can tell one type being given up from all of them. */
+    public static final class DeclaredCardPlan implements GeneratedMaskPlan {
+
+        @Override
+        public Class<?> type() {
+            return Banking.Card.class;
+        }
+
+        @Override
+        public MaskPlan plan() {
+            return recognisable(Banking.Card.class);
         }
     }
 

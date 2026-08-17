@@ -72,10 +72,17 @@ jacoco {
 
 // Every module that carries code feeds the aggregate. The BOM is a java-platform, so it has no
 // classes to contribute; datamask-architecture-tests has none of its own either, and coverage is a
-// statement about the library's tests rather than about the rules that police its structure.
+// statement about the library's tests rather than about the rules that police its structure. The
+// same goes for datamask-benchmarks: it is measurement code with no tests of its own, and letting a
+// few hundred uncovered instructions of benchmark harness into the aggregate would move the gate
+// without saying anything about the library.
 dependencies {
     rootProject.subprojects
-            .findAll { it.name != 'datamask-bom' && it.name != 'datamask-architecture-tests' }
+            .findAll {
+                it.name != 'datamask-bom'
+                        && it.name != 'datamask-architecture-tests'
+                        && it.name != 'datamask-benchmarks'
+            }
             .each { jacocoAggregation project(it.path) }
 }
 

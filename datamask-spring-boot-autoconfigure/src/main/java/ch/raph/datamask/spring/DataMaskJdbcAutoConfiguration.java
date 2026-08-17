@@ -26,7 +26,11 @@ import org.springframework.context.annotation.Bean;
  * knowing which of Boot's JDBC auto-configurations produced it.
  *
  * <p>{@code unwrap} still returns the driver's own objects, so a pool's metrics, a health indicator
- * and code reaching for {@code PGConnection} all keep working.
+ * and code reaching for {@code PGConnection} all keep working. What does not survive is an
+ * injection point declared as the pool's own type — an {@code @Autowired HikariDataSource} — since
+ * the bean is a {@code MaskingDataSource} once wrapped. {@code datamask.jdbc.excluded-beans} is the
+ * escape hatch for the case where that cannot be changed; see
+ * {@link MaskingDataSourceBeanPostProcessor}.
  */
 @AutoConfiguration(after = DataMaskAutoConfiguration.class)
 @ConditionalOnClass({MaskingDataSource.class, DataSource.class})
@@ -35,13 +39,14 @@ import org.springframework.context.annotation.Bean;
 public final class DataMaskJdbcAutoConfiguration {
 
     /**
-     * Static, and given a provider rather than the bean, because a {@code BeanPostProcessor} is
+     * Static, and given providers rather than the beans, because a {@code BeanPostProcessor} is
      * instantiated before most of the container exists. Resolving the {@code DataMask} eagerly here
      * would drag it and everything it depends on out of the ordinary lifecycle.
      */
     @Bean
-    static MaskingDataSourceBeanPostProcessor maskingDataSourceBeanPostProcessor(ObjectProvider<DataMask> dataMask) {
-        return new MaskingDataSourceBeanPostProcessor(dataMask);
+    static MaskingDataSourceBeanPostProcessor maskingDataSourceBeanPostProcessor(
+            ObjectProvider<DataMask> dataMask, ObjectProvider<DataMaskProperties> properties) {
+        return new MaskingDataSourceBeanPostProcessor(dataMask, properties);
     }
 
     /**

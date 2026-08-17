@@ -7,6 +7,8 @@ import ch.raph.datamask.infrastructure.generated.GeneratedMaskPlan;
 import ch.raph.datamask.plan.testdomain.PlanLoader;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,16 +41,20 @@ final class Generation {
 
     static final String TEST_DOMAIN = "src/test/java/ch/raph/datamask/plan/testdomain/Banking.java";
 
+    /** Two modules' worth of domain: the annotated type, and the wrapper that only holds it. */
+    static final String UPSTREAM = "src/test/java/ch/raph/datamask/plan/upstream/Contact.java";
+
+    static final String DOWNSTREAM = "src/test/java/ch/raph/datamask/plan/downstream/Envelope.java";
+
     private static Generation testDomain;
 
     private final Path output;
     private final Map<String, String> sources;
-    private final Map<Class<?>, MaskPlan> plans;
+    private Map<Class<?>, MaskPlan> plans;
 
-    private Generation(Path output, Map<String, String> sources, Map<Class<?>, MaskPlan> plans) {
+    private Generation(Path output, Map<String, String> sources) {
         this.output = output;
         this.sources = sources;
-        this.plans = plans;
     }
 
     /**
@@ -71,7 +77,13 @@ final class Generation {
         return testDomain;
     }
 
-    /** Runs the processor over the given source files, failing the test on any compile error. */
+    /**
+     * Runs the processor over the given source files, failing the test on any compile error.
+     *
+     * <p>Compiling into a working directory that already holds output is deliberate and is how the
+     * incremental case is reproduced: javac writes the files it was given and leaves everything else
+     * where it is, which is what Gradle's incremental compilation does to a build directory.
+     */
     static Generation of(Path workingDirectory, String... sourceFiles) {
         List<Path> paths = Stream.of(sourceFiles).map(Path::of).toList();
         paths.forEach(path -> assertThat(path)
@@ -85,8 +97,7 @@ final class Generation {
             Path generated = Files.createDirectories(workingDirectory.resolve("generated"));
 
             compile(paths, output, generated);
-            Map<String, String> sources = readGenerated(generated);
-            return new Generation(output, sources, load(sources.keySet(), output));
+            return new Generation(output, readGenerated(generated));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -122,8 +133,21 @@ final class Generation {
         }
     }
 
-    /** The plans the runtime would find, built the way the service loader builds them. */
+    /**
+     * The plans the runtime would find, defined into the domain's own package.
+     *
+     * <p>Only ever called for the shared test domain: {@link PlanLoader} can define a class into one
+     * package, its own, which is exactly what makes package-private access behave the way it does in
+     * a real build.
+     */
     Map<Class<?>, MaskPlan> plans() {
+        if (plans == null) {
+            try {
+                plans = load(sources.keySet(), output);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
         return plans;
     }
 
@@ -132,6 +156,20 @@ final class Generation {
         return sources;
     }
 
+    /** Where the compiled domain and its plans landed, as an application's classpath would see them. */
+    ClassLoader classLoader() {
+        try {
+            return new URLClassLoader(new URL[] {output.toUri().toURL()}, Generation.class.getClassLoader());
+        } catch (java.net.MalformedURLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * What a {@code META-INF/services} registration of the generated plans would say, which after
+     * this processor stopped writing one is nothing at all. Kept so a test can hold that line: the
+     * file is the shared state that made an incremental build drop plans.
+     */
     String serviceFile() {
         Path file = output.resolve("META-INF/services/ch.raph.datamask.infrastructure.generated.GeneratedMaskPlan");
         try {

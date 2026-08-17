@@ -1,5 +1,11 @@
-# Aggregating, because the one META-INF/services file has to list every generated plan and Filer
-# cannot append to a resource. An isolating processor would be handed only the changed sources on an
-# incremental build and would rewrite that file with a fraction of the plans in it — leaving the rest
-# unreachable, and their types quietly back on the reflective path.
-ch.raph.datamask.processor.plan.MaskPlanProcessor,AGGREGATING
+# Isolating, which it can only be because there is no index. Each plan is written from one type and
+# named after it, with that type as its single originating element, so Gradle knows which source
+# file each generated plan belongs to and can regenerate or delete exactly that one.
+#
+# This was AGGREGATING while the processor wrote a META-INF/services file listing every plan. Filer
+# cannot append to a resource, so that file had to be rewritten whole on every build — and on an
+# incremental build the processor sees only the sources that changed. It would rewrite the index
+# with a fraction of the plans in it and silently put the rest back on the reflective path, which
+# is worst for a wrapper type nobody edits and everything masks. GeneratedMaskPlanCompiler asks for
+# a plan by name instead, and nothing is shared between two types any more.
+ch.raph.datamask.processor.plan.MaskPlanProcessor,ISOLATING

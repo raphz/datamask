@@ -65,7 +65,7 @@ record DefaultMaskContext(
         if (vault == null) {
             // Degrading to an irreversible value would silently break every caller that expects to
             // exchange the token back, so this is a configuration error rather than a fallback.
-            throw new MaskingException(path, "TOKENIZE was requested but no TokenVault is configured", null);
+            throw MaskingException.atPath(path, "TOKENIZE was requested but no TokenVault is configured");
         }
         return vault.tokenize(value, descriptor.category());
     }

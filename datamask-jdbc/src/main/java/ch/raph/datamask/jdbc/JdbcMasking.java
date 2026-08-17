@@ -1,9 +1,7 @@
 package ch.raph.datamask.jdbc;
 
 import ch.raph.datamask.api.MaskStrategy;
-import ch.raph.datamask.api.Masker;
 import ch.raph.datamask.api.PiiCategory;
-import ch.raph.datamask.api.Sensitivity;
 import ch.raph.datamask.application.MaskingEngine;
 import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.domain.PiiDescriptor;
@@ -29,11 +27,26 @@ final class JdbcMasking {
     private final MaskingEngine engine;
     private final MaskingObserver observer;
     private final SqlExceptionSanitizer exceptions;
+    private final boolean wrapResultSets;
 
     JdbcMasking(MaskingEngine engine) {
+        this(engine, true);
+    }
+
+    private JdbcMasking(MaskingEngine engine, boolean wrapResultSets) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.observer = engine.observer();
         this.exceptions = new SqlExceptionSanitizer(engine);
+        this.wrapResultSets = wrapResultSets;
+    }
+
+    JdbcMasking withoutResultSetWrapping() {
+        return new JdbcMasking(engine, false);
+    }
+
+    /** Whether result sets are proxied — see {@link MaskingDataSource#withoutResultSetWrapping()}. */
+    boolean wrapsResultSets() {
+        return wrapResultSets;
     }
 
     /** Sanitises a database exception on its way out of a JDBC call; anything else passes through. */
@@ -126,8 +139,10 @@ final class JdbcMasking {
             strategy = MaskStrategy.REDACT;
         }
         observer.onUnannotatedPii(path, recognised, "bind-parameter");
-        PiiDescriptor descriptor =
-                new PiiDescriptor(recognised, Sensitivity.HIGH, strategy, -1, '*', "", Masker.class, "");
+        // Built through the factory and a wither rather than the canonical constructor: everything
+        // but the strategy is the category's own default, and naming the one thing that differs is
+        // what keeps this call site working when the record gains a component.
+        PiiDescriptor descriptor = PiiDescriptor.of(recognised).withStrategy(strategy);
         Object masked = engine.maskDeclared(text.toString(), descriptor, String.class, path);
         return masked == null ? placeholder() : masked.toString();
     }

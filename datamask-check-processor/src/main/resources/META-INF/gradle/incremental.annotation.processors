@@ -1,0 +1,13 @@
+# Isolating, and it has to say so: without this file Gradle assumes the worst of any processor on
+# the annotation path and recompiles every source file in the project on every change — in every
+# build that adds this module. That cost is paid by adopters, not by this repository, which is
+# what makes it worth a line of configuration.
+#
+# The contract Gradle asks for is that every decision comes from the annotated element and what is
+# reachable from it, and that each generated file names exactly one originating element. All four
+# checks qualify: the custom masker check reads the class the annotation names, the rebuild check
+# reads the owning class and its superclass chain, and the justification and partial-reveal checks
+# read attributes of the annotation itself. Nothing consults another source file in the round, and
+# nothing is generated at all — there is no aggregate output an incremental round could rewrite
+# with half of it missing.
+ch.raph.datamask.processor.PiiProcessor,ISOLATING

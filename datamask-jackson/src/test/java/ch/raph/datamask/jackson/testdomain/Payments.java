@@ -8,10 +8,14 @@ import ch.raph.datamask.api.PII;
 import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.api.Sensitivity;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import tools.jackson.core.JsonGenerator;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.annotation.JsonSerialize;
@@ -118,4 +122,88 @@ public final class Payments {
             generator.writeString(value.toUpperCase(Locale.ROOT));
         }
     }
+
+    /** A tree nobody classified — a webhook body, a stored document, an audit detail. */
+    public record Webhook(String id, JsonNode payload) {}
+
+    /**
+     * Free text whose author <em>declared</em> it as such. A detector hit here is the scanner doing
+     * the job it was asked to do, not the discovery that a field nobody classified is leaking.
+     */
+    public record SupportTicket(
+            @PII(category = PiiCategory.FREEFORM_TEXT) String body) {}
+
+    /** A {@code CharSequence} that is not a {@code String}, which Jackson serialises differently. */
+    public record Note(StringBuilder body) {}
+
+    /**
+     * The party of an order, written flattened into it. One property is masked, one is exempt from
+     * masking and from the scanner, and one is dropped by a {@code PolicyOverrides} entry.
+     */
+    public record Party(
+            @PII(category = PiiCategory.EMAIL) String email,
+
+            @NoMask(justification = "the treasury's own account, published in the annual report")
+            String houseIban,
+
+            String reference) {}
+
+    /** A holder that flattens the party into itself. */
+    public static final class Order {
+
+        private final String id;
+
+        @JsonUnwrapped
+        private final Party party;
+
+        public Order(String id, Party party) {
+            this.id = id;
+            this.party = party;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public Party getParty() {
+            return party;
+        }
+    }
+
+    /** The same, under a prefix — which makes Jackson rebuild every property writer under a new name. */
+    public static final class PrefixedOrder {
+
+        @JsonUnwrapped(prefix = "party_")
+        private final Party party;
+
+        public PrefixedOrder(Party party) {
+            this.party = party;
+        }
+
+        public Party getParty() {
+            return party;
+        }
+    }
+
+    /** A polymorphic hierarchy, the shape an API uses for a payment instrument. */
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = CardInstrument.class, name = "card"),
+        @JsonSubTypes.Type(value = BankInstrument.class, name = "bank")
+    })
+    public sealed interface Instrument permits CardInstrument, BankInstrument {}
+
+    public record CardInstrument(
+            @PII(category = PiiCategory.PAN) String number) implements Instrument {}
+
+    public record BankInstrument(
+            @PII(category = PiiCategory.IBAN) String iban) implements Instrument {}
+
+    public record Wallet(Instrument primary, List<Instrument> alternatives) {}
+
+    /** A property that is classified <em>and</em> polymorphic: masking runs before the type serializer. */
+    public record Envelope(
+            @PII(category = PiiCategory.EMAIL)
+            @JsonTypeInfo(use = JsonTypeInfo.Id.SIMPLE_NAME, include = JsonTypeInfo.As.WRAPPER_OBJECT)
+            Object subject) {}
 }

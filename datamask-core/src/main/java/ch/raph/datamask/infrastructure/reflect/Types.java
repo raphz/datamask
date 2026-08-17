@@ -80,6 +80,15 @@ public final class Types {
                 || packageName.startsWith("sun.");
     }
 
+    /**
+     * A leaf whose textual form can still hide PII, so an unannotated member of this type is worth
+     * descending into when content scanning is on. A {@code URI} is the case that matters: the
+     * query string of a stored callback or redirect URL routinely carries an address or an id.
+     */
+    public static boolean isScannableText(Class<?> type) {
+        return CharSequence.class.isAssignableFrom(type) || type == URI.class || type == URL.class;
+    }
+
     public static boolean isContainer(Class<?> type) {
         return type.isArray()
                 || Collection.class.isAssignableFrom(type)

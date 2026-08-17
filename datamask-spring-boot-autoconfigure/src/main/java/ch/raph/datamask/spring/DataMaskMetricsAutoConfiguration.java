@@ -21,11 +21,25 @@ import org.springframework.context.annotation.Bean;
  * engine picks up every {@code MaskingObserver} in the context, including this one alongside an
  * application's own audit sink.
  */
+// The ordering after CompositeMeterRegistryAutoConfiguration is load-bearing, not cosmetic:
+// @ConditionalOnBean evaluates against the bean DEFINITIONS present at processing time, and the
+// MeterRegistry definitions come from the metrics export auto-configurations (Simple, Prometheus,
+// ...) and the composite registry, all of which would otherwise sort AFTER this class
+// (alphabetically, ch.raph.* precedes org.springframework.*). Without it the condition sees no
+// registry, silently backs off, and the datamask.unannotated alert never exists. Every export
+// auto-configuration orders before the composite one, so ordering after the composite covers them
+// all — the same reason Boot's own JvmMetricsAutoConfiguration orders after it.
 @AutoConfiguration(
         before = DataMaskAutoConfiguration.class,
-        afterName = "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration")
+        afterName = {
+            "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+            "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration"
+        })
 @ConditionalOnClass(MeterRegistry.class)
 @ConditionalOnBean(MeterRegistry.class)
+// Unlike the other integrations this class cannot gate on the DataMask bean (it runs before the
+// core auto-configuration), so it repeats the master switch: no masking, no masking telemetry.
+@ConditionalOnBooleanProperty(name = "datamask.enabled", matchIfMissing = true)
 @ConditionalOnBooleanProperty(name = "datamask.metrics.enabled", matchIfMissing = true)
 public final class DataMaskMetricsAutoConfiguration {
 

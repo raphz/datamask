@@ -15,5 +15,11 @@
  *
  * <p>The plugins are registered through the descriptor log4j2's own annotation processor writes at build
  * time, so nothing has to scan a package for them.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.log4j2;
+
+import org.jspecify.annotations.NullMarked;

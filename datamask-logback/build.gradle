@@ -2,10 +2,17 @@ plugins {
     id 'datamask.java-conventions'
 }
 
-description = 'Logback integration: masking of log arguments, message bodies, MDC and exception messages.'
+description = 'Logback integration: masking of log arguments, message bodies, MDC, markers and exception messages.'
 
 dependencies {
     api project(':datamask-core')
     api libs.logback.classic
     implementation libs.slf4j.api
+
+    // Optional on purpose. When logstash-logback-encoder is present its appending markers are
+    // rebuilt around masked payloads; without it the module still masks everything else and strips
+    // any marker it cannot inspect down to its name.
+    compileOnly libs.logstash.logback.encoder
+
+    testImplementation libs.logstash.logback.encoder
 }

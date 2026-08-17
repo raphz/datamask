@@ -58,16 +58,19 @@ final class MaskingSerializerModifier extends ValueSerializerModifier {
             BeanPropertyWriter replacement =
                     switch (member.action()) {
                         case MaskAction.Mask mask -> {
-                            // The path has the same shape the engine gives a root-level member, so
-                            // an observer reads the same whether the value was masked here or by a
-                            // graph walk.
-                            String path = beanClass.getSimpleName() + "." + member.name();
+                            // `jackson:Customer/iban`: the module's scheme, the bean as the site,
+                            // the member as the detail. The scheme is what lets a rule tell a
+                            // finding reported here from the identical one `DataMask.mask()` would
+                            // report if the application masked the same object itself.
+                            String path = TextScanner.path(beanClass.getSimpleName(), member.name());
                             yield new MaskingPropertyWriter(
                                     writer,
                                     new MaskingSerializer(engine, mask.descriptor(), member.declaredType(), path));
                         }
                         // Not written at all — the only form of masking that leaves no trace of the
-                        // field in the document.
+                        // field in the document, which is what a deployment means when it says a
+                        // field must never leave the process, not even as evidence it exists.
+                        // Reached through `PolicyOverrides.builder().drop(Type.class, "member")`.
                         case MaskAction.Drop ignored -> null;
                         case MaskAction.Keep ignored -> exemptFromScanning(writer);
                         // Nested beans are reached by Jackson's own traversal, which brings this

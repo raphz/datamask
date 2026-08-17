@@ -16,6 +16,9 @@ public final class IpAddressMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         String text = Masks.text(value).trim();
         if (text.indexOf(':') >= 0) {
             return maskIpv6(text, context);

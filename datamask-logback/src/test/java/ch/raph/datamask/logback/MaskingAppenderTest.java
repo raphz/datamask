@@ -121,6 +121,39 @@ class MaskingAppenderTest {
     }
 
     @Test
+    @DisplayName("builds the fallback once rather than per event, so logging does not construct a DataMask per line")
+    void buildsTheFallbackOnce() {
+        Logger logger = start();
+
+        logger.info("crediting {}", IBAN);
+        logger.info("crediting {}", IBAN);
+        logger.info("crediting {}", IBAN);
+
+        assertThat(context.getStatusManager().getCopyOfStatusList())
+                .filteredOn(status -> status.getMessage().contains("ephemeral key"))
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("hands back what was installed, and forgets it on uninstall, for a container shutting down")
+    void exposesWhatWasInstalled() {
+        DataMask dataMask = DataMask.builder().secret(SECRET).build();
+
+        DataMaskLogback.install(dataMask);
+        assertThat(DataMaskLogback.installed()).containsSame(dataMask);
+
+        DataMaskLogback.uninstall();
+        assertThat(DataMaskLogback.installed()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("refuses a null instance rather than silently uninstalling the one that was masking")
+    void refusesANullInstall() {
+        org.assertj.core.api.Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> DataMaskLogback.install(null));
+    }
+
+    @Test
     @DisplayName("builds its own engine from a secret, for a deployment configured entirely in XML")
     void buildsFromASecret() {
         masking.setSecret(SECRET);

@@ -16,6 +16,9 @@ public final class PhoneMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         String text = Masks.text(value);
         int totalDigits = 0;
         for (int i = 0; i < text.length(); i++) {

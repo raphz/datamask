@@ -5,10 +5,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.PII;
 import ch.raph.datamask.api.PiiCategory;
+import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.domain.MaskingPolicy;
+import ch.raph.datamask.infrastructure.vault.InMemoryTokenVault;
 import ch.raph.datamask.testdomain.Banking;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -41,10 +45,10 @@ class DataMaskTest {
         void pseudonymisesIban() {
             Banking.Customer masked = dataMask.mask(customer);
 
+            // `~` marks a surrogate, then the id of the key that issued it, then the digest.
             assertThat(masked.iban())
-                    .startsWith("~")
                     .doesNotContain("9300762011623852957")
-                    .hasSize(17);
+                    .matches("~[A-Za-z0-9_\\-]{6}:[A-Za-z0-9_\\-]{16}");
         }
 
         @Test
@@ -255,12 +259,44 @@ class DataMaskTest {
     }
 
     @Nested
+    @DisplayName("builder reuse")
+    class BuilderReuse {
+
+        record Reference(
+                @PII(strategy = MaskStrategy.REDACT, category = PiiCategory.CUSTOMER_ID)
+                String value) {}
+
+        @Test
+        @DisplayName("a masker registered after build() does not reach back into the instance already built")
+        void registrationsDoNotLeakBackwards() {
+            DataMask.Builder builder = DataMask.builder().secret(SECRET);
+            DataMask first = builder.build();
+
+            builder.masker(MaskStrategy.REDACT, (value, context) -> "REGISTERED-LATER");
+            DataMask second = builder.build();
+
+            // One mutable registry shared by every build() made this action at a distance: an
+            // instance handed to one part of an application changed how it masked because another
+            // part configured a builder later. In a security library that is not a surprise, it is
+            // a hazard.
+            assertThat(first.mask(new Reference("cust-4711")).value()).isNotEqualTo("REGISTERED-LATER");
+            assertThat(second.mask(new Reference("cust-4711")).value()).isEqualTo("REGISTERED-LATER");
+        }
+    }
+
+    @Nested
     @DisplayName("tokenisation")
     class Tokenisation {
 
         record Payment(
                 @PII(strategy = MaskStrategy.TOKENIZE, category = PiiCategory.IBAN)
                 String debtor) {}
+
+        /** A vault is configured explicitly, because no application gets one by default. */
+        private final DataMask dataMask = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .vault(new InMemoryTokenVault())
+                .build();
 
         @Test
         @DisplayName("issues a surrogate the vault can exchange back")
@@ -277,6 +313,29 @@ class DataMaskTest {
             assertThat(dataMask.mask(new Payment("CH9300762011623852957")).debtor())
                     .isEqualTo(
                             dataMask.mask(new Payment("CH9300762011623852957")).debtor());
+        }
+
+        @Test
+        @DisplayName("redacts and reports rather than tokenising when no vault was configured")
+        void refusesWithoutAVault() {
+            List<String> failures = new CopyOnWriteArrayList<>();
+            DataMask noVault = DataMask.builder()
+                    .secret("a-test-secret-of-sufficient-length")
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onFailure(String path, Throwable failure) {
+                            failures.add(path);
+                        }
+                    })
+                    .build();
+
+            // The default vault refuses to issue tokens, so TOKENIZE degrades to redaction. An
+            // in-memory vault installed silently would instead have "worked" — holding the raw
+            // IBAN in a heap map and handing anyone who can reach detokenize a way back to it.
+            assertThat(noVault.mask(new Payment("CH9300762011623852957")).debtor())
+                    .isEqualTo("****")
+                    .doesNotContain("9300762011623852957");
+            assertThat(failures).isNotEmpty();
         }
     }
 

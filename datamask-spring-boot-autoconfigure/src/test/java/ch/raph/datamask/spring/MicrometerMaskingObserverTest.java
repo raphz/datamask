@@ -13,6 +13,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration;
+import org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -70,6 +73,68 @@ class MicrometerMaskingObserverTest {
                         assertThat(context).doesNotHaveBean(MicrometerMaskingObserver.class);
                         assertThat(context).hasSingleBean(DataMask.class);
                     });
+        }
+
+        @Test
+        @DisplayName("follows the master switch too: when masking itself is off, counters that would only "
+                + "ever read zero do not pretend otherwise")
+        void absentWhenMaskingIsDisabled() {
+            runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                    .withPropertyValues("datamask.enabled=false")
+                    .run(context -> assertThat(context)
+                            .hasNotFailed()
+                            .doesNotHaveBean(MicrometerMaskingObserver.class)
+                            .doesNotHaveBean(DataMask.class));
+        }
+    }
+
+    /**
+     * The registry a real Boot application has is not a user bean: it is defined by the metrics
+     * export auto-configurations, which sort alphabetically after this module's. These tests run
+     * Boot's actual chain, so they fail if the {@code afterName} ordering on
+     * {@link DataMaskMetricsAutoConfiguration} is ever dropped — {@code @ConditionalOnBean} would
+     * then evaluate before any registry definition exists and silently back off.
+     */
+    @Nested
+    @DisplayName("Against Boot's own metrics auto-configurations")
+    class BootMetricsChain {
+
+        private final ApplicationContextRunner bootChain = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MetricsAutoConfiguration.class,
+                        CompositeMeterRegistryAutoConfiguration.class,
+                        SimpleMetricsExportAutoConfiguration.class,
+                        DataMaskMetricsAutoConfiguration.class,
+                        DataMaskAutoConfiguration.class))
+                .withPropertyValues("datamask.secret=" + SECRET);
+
+        @Test
+        @DisplayName("registers the observer against the auto-configured registry, not only against one "
+                + "the application defined by hand")
+        void observesTheAutoConfiguredRegistry() {
+            bootChain.run(context -> {
+                assertThat(context).hasSingleBean(MicrometerMaskingObserver.class);
+
+                context.getBean(DataMask.class).mask(new Customer("bruno@example.com"));
+
+                MeterRegistry registry = context.getBean(MeterRegistry.class);
+                assertThat(registry.get("datamask.masked")
+                                .tag("category", "EMAIL")
+                                .counter()
+                                .count())
+                        .isEqualTo(1.0);
+            });
+        }
+
+        @Test
+        @DisplayName("stays absent on the real chain too when masking is disabled")
+        void absentWhenMaskingIsDisabled() {
+            bootChain
+                    .withPropertyValues("datamask.enabled=false")
+                    .run(context -> assertThat(context)
+                            .hasNotFailed()
+                            .hasSingleBean(MeterRegistry.class)
+                            .doesNotHaveBean(MicrometerMaskingObserver.class));
         }
     }
 

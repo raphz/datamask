@@ -68,6 +68,191 @@ class MaskingEngineTest {
     }
 
     @Test
+    @DisplayName("nulls a back-reference rather than planting the raw original inside the masked graph")
+    void cutsCyclesFailClosed() {
+        Banking.Node first = Banking.Node.of("john.doe@example.com");
+        Banking.Node second = Banking.Node.of("jane.roe@example.com");
+        first.linkTo(second);
+        second.linkTo(first);
+
+        Banking.Node masked = dataMask.mask(first);
+
+        // The back-reference must not be the original node: its email is still unmasked.
+        assertThat(masked.getNext().getNext()).isNull();
+    }
+
+    @Test
+    @DisplayName("masks a node shared by two branches twice over, because a DAG is not a cycle")
+    void doesNotMistakeSharingForACycle() {
+        record Pair(Banking.Node left, Banking.Node right) {}
+        Banking.Node shared = Banking.Node.of("john.doe@example.com");
+
+        Pair masked = dataMask.mask(new Pair(shared, shared));
+
+        // Cutting a back-reference must not cut a second, sequential visit to the same instance:
+        // the identity set is scoped to the path being walked, not to the whole traversal.
+        assertThat(masked.left()).isNotNull();
+        assertThat(masked.right()).isNotNull();
+        assertThat(masked.left().getEmail()).isEqualTo("j*******@e******.com");
+        assertThat(masked.right().getEmail()).isEqualTo("j*******@e******.com");
+    }
+
+    @Test
+    @DisplayName("degrades an unrebuildable bean per the failure policy instead of crashing the caller")
+    void redactsUnrebuildableBean() {
+        Banking.Unrebuildable masked = dataMask.mask(new Banking.Unrebuildable(7, "john.doe@example.com"));
+
+        assertThat(masked).isNull();
+    }
+
+    @Test
+    @DisplayName("surfaces an unrebuildable bean under FailureMode.THROW without echoing the value")
+    void throwsOnUnrebuildableBeanWhenAsked() {
+        DataMask throwing = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                .build();
+
+        assertThatThrownBy(() -> throwing.mask(new Banking.Unrebuildable(7, "john.doe@example.com")))
+                .isInstanceOf(MaskingException.class)
+                .hasMessageContaining("could not build a masked copy")
+                .satisfies(e -> assertThat(String.valueOf(e)).doesNotContain("john.doe@example.com"));
+    }
+
+    @Test
+    @DisplayName("rebuilds a bean whose constructor takes the fields in a different order than it declares them")
+    void masksBeanWithReorderedConstructor() {
+        Banking.ReorderedConstructor masked =
+                dataMask.mask(new Banking.ReorderedConstructor(7, "john.doe@example.com"));
+
+        assertThat(masked).isNotNull();
+        assertThat(masked.getEmail()).doesNotContain("john.doe").isEqualTo("j*******@e******.com");
+        // The unmasked member has to come back as itself: a permuted rebuild that got the order
+        // wrong would put the masked address here and the flags where the address belongs.
+        assertThat(masked.getFlags()).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("refuses to rebuild rather than risk swapping two same-typed members it cannot tell apart")
+    void refusesAmbiguousConstructor() {
+        Banking.UnmatchableConstructor masked =
+                dataMask.mask(new Banking.UnmatchableConstructor("ref-4711", "john.doe@example.com"));
+
+        // Dropped, not guessed. Guessing produces a masked copy in which the reference reads as an
+        // address and the address as a reference — wrong data that looks entirely plausible.
+        assertThat(masked).isNull();
+    }
+
+    @Test
+    @DisplayName("still passes an unrebuildable but PII-free bean through, via the no-change short-circuit")
+    void keepsCleanUnrebuildableBean() {
+        Banking.UnrebuildableClean clean = new Banking.UnrebuildableClean(true, 7);
+
+        assertThat(dataMask.mask(clean)).isSameAs(clean);
+    }
+
+    @Test
+    @DisplayName("treats a type whose plan failed to compile as a structural failure, never a pass-through")
+    void failsClosedOnFailedPlan() {
+        List<String> failures = new CopyOnWriteArrayList<>();
+        DataMask failing = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .compiler(type -> ch.raph.datamask.domain.MaskPlan.failed(type, "inaccessible in this test"))
+                .observer(new MaskingObserver() {
+                    @Override
+                    public void onFailure(String path, Throwable failure) {
+                        failures.add(String.valueOf(failure));
+                    }
+                })
+                .build();
+
+        assertThat(failing.mask(new Banking.LowRisk("john.doe@example.com"))).isNull();
+        assertThat(failures).isNotEmpty();
+        assertThat(failures.getFirst()).doesNotContain("john.doe@example.com");
+    }
+
+    @Test
+    @DisplayName("masks card data and credentials under any threshold — no policy can switch them off")
+    void masksCriticalCategoriesUnderAnyThreshold() {
+        record Payment(
+                @PII(category = PiiCategory.PAN) String card,
+                @PII(category = PiiCategory.CREDENTIAL) String apiKey,
+                @PII(category = PiiCategory.EMAIL) String email) {}
+        DataMask lax = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .policy(MaskingPolicy.strict()
+                        .withThreshold(ch.raph.datamask.api.Sensitivity.CRITICAL)
+                        .withScanUnannotatedText(false))
+                .build();
+
+        Payment masked = lax.mask(new Payment("4111111111111111", "sk_live_0123456789", "john.doe@example.com"));
+
+        assertThat(masked.card()).isEqualTo("**** **** **** 1111");
+        assertThat(masked.apiKey()).isEqualTo("****");
+        // EMAIL classifies HIGH, so the CRITICAL threshold deliberately leaves it alone.
+        assertThat(masked.email()).isEqualTo("john.doe@example.com");
+    }
+
+    @Test
+    @DisplayName("refuses a partially-revealing strategy on a category that must never be partially revealed")
+    void refusesRevealingStrategyOnNeverRevealCategory() {
+        record Leaky(
+                @PII(category = PiiCategory.CREDENTIAL, strategy = MaskStrategy.PAN, keep = 4)
+                String secret) {}
+
+        Leaky masked = dataMask.mask(new Leaky("40000000000000000000"));
+
+        assertThat(masked.secret()).isEqualTo("****").doesNotContain("0000");
+    }
+
+    @Test
+    @DisplayName("hardens a never-reveal category on maskDeclared too, the entry point integrations use")
+    void hardensTheIntegrationEntryPoint() {
+        Object masked = dataMask.engine()
+                .maskDeclared(
+                        "40000000000000000000",
+                        new ch.raph.datamask.domain.PiiDescriptor(
+                                PiiCategory.CARD_VERIFICATION_VALUE,
+                                ch.raph.datamask.api.Sensitivity.HIGH,
+                                MaskStrategy.PAN,
+                                4,
+                                '*',
+                                "",
+                                ch.raph.datamask.api.Masker.class,
+                                ""),
+                        String.class,
+                        "jdbc:param/1");
+
+        assertThat(masked).hasToString("****");
+    }
+
+    @Test
+    @DisplayName("keeps map keys out of observer paths — a map is often keyed by exactly the PII being hidden")
+    void neverPutsMapKeysInPaths() {
+        List<String> paths = new CopyOnWriteArrayList<>();
+        DataMask observed = DataMask.builder()
+                .secret("a-test-secret-of-sufficient-length")
+                .observer(new MaskingObserver() {
+                    @Override
+                    public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
+                        paths.add(path);
+                    }
+
+                    @Override
+                    public void onUnannotatedPii(String path, PiiCategory category, String detector) {
+                        paths.add(path);
+                    }
+                })
+                .build();
+
+        observed.mask(Map.of("john.doe@example.com", new Banking.Card("4111111111111111", "123", "John Doe")));
+
+        assertThat(paths)
+                .isNotEmpty()
+                .allSatisfy(path -> assertThat(path).doesNotContain("john.doe").doesNotContain("@"));
+    }
+
+    @Test
     @DisplayName("rebuilds a bean through its all-arguments constructor")
     void rebuildsBeanWithAllArgsConstructor() {
         Banking.LegacyCustomer masked = dataMask.mask(new Banking.LegacyCustomer("john.doe@example.com", "CH"));

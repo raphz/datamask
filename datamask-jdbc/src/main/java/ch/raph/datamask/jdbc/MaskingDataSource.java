@@ -56,8 +56,36 @@ public final class MaskingDataSource implements DataSource {
     }
 
     public MaskingDataSource(DataSource delegate, MaskingEngine engine) {
+        this(delegate, new JdbcMasking(Objects.requireNonNull(engine, "engine")));
+    }
+
+    private MaskingDataSource(DataSource delegate, JdbcMasking masking) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.masking = new JdbcMasking(Objects.requireNonNull(engine, "engine"));
+        this.masking = masking;
+    }
+
+    /**
+     * The same wrapper with result sets left unproxied, for a read path where the proxy's cost has
+     * been measured and found to matter.
+     *
+     * {@snippet :
+     * DataSource dataSource = new MaskingDataSource(hikariDataSource, dataMask).withoutResultSetWrapping();
+     * }
+     *
+     * <p><strong>Know what this gives up.</strong> Not every database error arrives at execution.
+     * In cursor mode a statement timeout, a cast failing on a stored value or a broken connection
+     * surfaces from {@code next()} or a getter, and those exceptions now reach the application
+     * exactly as the driver threw them — carrying whatever row value the driver put in the message.
+     * Connections, statements, bind parameters and metadata are still wrapped, so the
+     * unique-constraint violation this library was written for is still sanitised either way.
+     *
+     * <p>What it buys is a proxy dispatch per call on the one path whose cost scales with the size
+     * of the result: a thousand-row fetch reading ten columns is ten thousand reflective forwards.
+     * {@code datamask-benchmarks} measures it; turn this on because that measurement said something
+     * about <em>your</em> read path, not on the assumption that it must be expensive.
+     */
+    public MaskingDataSource withoutResultSetWrapping() {
+        return new MaskingDataSource(delegate, masking.withoutResultSetWrapping());
     }
 
     @Override

@@ -40,6 +40,10 @@ import org.springframework.context.annotation.Bean;
  * reversible — or a random one per JVM, which is safe but makes pseudonyms incomparable across
  * restarts and instances, quietly removing the reason to prefer hashing over redaction. Neither is
  * a defensible default, so the context fails instead. See {@link MissingMaskSecretException}.
+ *
+ * <p>A secret that is present but shorter than the minimum fails the same way, through
+ * {@link ShortMaskSecretException}: padding it out would be the same mistake as a shipped default,
+ * because the values {@code HASH} covers come from an input space small enough to enumerate.
  */
 @AutoConfiguration
 @ConditionalOnClass(DataMask.class)
@@ -100,7 +104,16 @@ public final class DataMaskAutoConfiguration {
                 log.warn("Both datamask.secret and datamask.ephemeral-key are set; using the configured "
                         + "secret and ignoring datamask.ephemeral-key.");
             }
-            builder.secret(properties.secret());
+            try {
+                builder.secret(properties.secret());
+            } catch (IllegalArgumentException e) {
+                // The minimum length is the only thing MaskKey.ofSecret rejects a non-null secret
+                // for, so this is that rule. Translated at the boundary rather than left to reach an
+                // operator as a stack trace out of the crypto adapter, which reads like a library
+                // bug rather than a value that needs to be longer. Nothing derived from the secret
+                // crosses into the new exception; see ShortMaskSecretFailureAnalyzer.
+                throw new ShortMaskSecretException(e);
+            }
             return;
         }
         if (!properties.ephemeralKey()) {

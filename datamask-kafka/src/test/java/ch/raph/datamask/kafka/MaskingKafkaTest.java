@@ -21,6 +21,8 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.Deserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -34,16 +36,18 @@ import org.testcontainers.kafka.KafkaContainer;
  * The end-to-end case: a real broker, a real produce, and the bytes that actually landed on the topic
  * read back as bytes.
  *
- * <p>Every other test in this module calls the plugin directly. This one does not assume the producer
- * goes through them at all — it configures a {@code KafkaProducer} the way an application would and
- * checks what a consumer sees, which is the only way to know that the serializer is reached, that the
- * interceptor is reached, and that neither is bypassed by something in between.
+ * <p>Every other test in this module calls the plugin directly. This one does not assume the client
+ * goes through them at all — it configures a {@code KafkaProducer} and a {@code KafkaConsumer} the way
+ * an application would, which is the only way to know that the serializer is reached, that the
+ * interceptors are reached, and that none of them is bypassed by something in between.
  *
  * <p>{@link #leaksWithoutTheModule()} is deliberately the first assertion: a test that a value is
- * absent proves nothing unless the same produce demonstrably leaks it without the module in place.
+ * absent proves nothing unless the same produce demonstrably leaks it without the module in place. It
+ * is also what the consumer-side test consumes from: a topic written before any of this was installed
+ * is exactly the case {@link MaskingConsumerInterceptor} exists for.
  */
-@DisplayName("A producer against a real Kafka broker")
-class MaskingProducerKafkaTest {
+@DisplayName("A Kafka client against a real broker")
+class MaskingKafkaTest {
 
     private static final String EMAIL = "john@example.com";
     private static final String IBAN = "CH9300762011623852957";
@@ -131,6 +135,33 @@ class MaskingProducerKafkaTest {
         assertThat(landed.key()).isEqualTo("cust-4711");
     }
 
+    @Test
+    @DisplayName("masks what a consumer polls from a topic that was written unmasked, which is every topic with "
+            + "history behind it")
+    void theConsumerInterceptorMasksWhatWasAlreadyThere() {
+        String topic = topic();
+        DataMaskKafka.install(DataMask.withDefaults());
+
+        // Written without the module, so the topic itself still holds the raw value — proven by
+        // leaksWithoutTheModule above, which produces exactly this way.
+        produce(topic, Map.of());
+
+        ConsumerRecord<String, String> polled = consumeAsText(
+                topic,
+                Map.of(
+                        ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG,
+                        MaskingConsumerInterceptor.class.getName(),
+                        DataMaskKafka.REDACTED_HEADERS_CONFIG,
+                        "x-customer-ref"));
+
+        assertThat(polled.value()).doesNotContain(IBAN).startsWith("settlement for ");
+        assertThat(header(polled, "x-customer-email")).doesNotContain(EMAIL);
+        assertThat(header(polled, "x-customer-ref")).isEqualTo("****");
+        assertThat(header(polled, "traceparent")).isEqualTo("00-abc-def-01");
+        // Application code correlates by the key, so it is left alone until a consumer asks otherwise.
+        assertThat(polled.key()).isEqualTo("cust-4711");
+    }
+
     private static String topic() {
         return "payments-" + UUID.randomUUID();
     }
@@ -155,19 +186,38 @@ class MaskingProducerKafkaTest {
 
     /** Read back as bytes, so the assertions are on exactly what the topic holds. */
     private static Landed consume(String topic) {
+        return new Landed(poll(topic, ByteArrayDeserializer.class, Map.of()));
+    }
+
+    /**
+     * Read back as text, which is what an application configures and therefore what the consumer
+     * interceptor is handed: by the time it runs, the value has already been deserialized.
+     */
+    private static ConsumerRecord<String, String> consumeAsText(String topic, Map<String, String> extra) {
+        return poll(topic, StringDeserializer.class, extra);
+    }
+
+    private static <T> ConsumerRecord<T, T> poll(
+            String topic, Class<? extends Deserializer<T>> deserializer, Map<String, String> extra) {
         Map<String, Object> configs = new HashMap<>();
         configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         configs.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
         configs.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
-        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserializer.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserializer.getName());
+        configs.putAll(extra);
 
-        try (KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(configs)) {
+        try (KafkaConsumer<T, T> consumer = new KafkaConsumer<>(configs)) {
             consumer.subscribe(List.of(topic));
-            ConsumerRecords<byte[], byte[]> polled = consumer.poll(Duration.ofSeconds(30));
+            ConsumerRecords<T, T> polled = consumer.poll(Duration.ofSeconds(30));
             assertThat(polled.count()).as("nothing was published to %s", topic).isEqualTo(1);
-            return new Landed(polled.iterator().next());
+            return polled.iterator().next();
         }
+    }
+
+    private static String header(ConsumerRecord<?, ?> record, String name) {
+        Header found = record.headers().lastHeader(name);
+        return found == null || found.value() == null ? null : new String(found.value(), StandardCharsets.UTF_8);
     }
 
     /** What a consumer sees, rendered as text only at the point of asserting on it. */

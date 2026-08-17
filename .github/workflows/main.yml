@@ -29,20 +29,29 @@ jobs:
       - name: Set up the build
         uses: ./.github/actions/setup-build
 
-      # `build` also enforces the architecture rules and the 80% coverage gate.
+      # `build` also enforces the architecture rules and the 80% coverage gate. It compiles the
+      # JMH benchmarks but never runs them — see .github/workflows/benchmarks.yml.
       - name: Build
         run: ./gradlew build --info
+
+      - name: Publish the test results
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/test-report
 
       - name: Publish the coverage report
         if: ${{ !cancelled() }}
         uses: ./.github/actions/coverage-report
 
+      # The summary above carries the failures; this is the browsable HTML and the raw JUnit
+      # XML, for a failure that needs the whole trace or a tool that wants to parse it.
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
-          path: "**/build/reports/tests/test"
+          path: |
+            **/build/reports/tests/test
+            **/build/test-results/*/*.xml
           retention-days: 7
 
       # Off main, axion stamps builds as `-rc-<shortRevision>`. Keeping the jars makes a

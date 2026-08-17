@@ -91,16 +91,61 @@ Each `MemberPlan` carries a `MaskAction`, a sealed interface with four cases:
 **Rebuilding.** Records use the canonical constructor. Beans use an all-arguments constructor whose
 parameter types match field order (what Lombok's `@AllArgsConstructor` and Jackson's
 `@ConstructorProperties` produce), else a no-argument constructor plus field writes. When neither
-works the plan's rebuilder throws a `MaskingException` with a message telling the caller what to do.
+works the members stay in the plan (so a PII-free instance still short-circuits) but the rebuilder
+throws a plain `IllegalStateException`, which the engine degrades per the failure policy — `null`
+under REDACT, `MaskingException` under THROW. A type whose members cannot even be *read* gets
+`MaskPlan.failed(type, reason)` — distinct from `opaque`, and treated as a structural failure
+rather than passed through (`kafka`'s `RecordMasker` refuses the resulting `null` and fails the
+send instead, because a null record value is a tombstone, not less information).
 
 **The no-change short-circuit is important.** If no member changed, the engine returns the *same
 instance* and never calls the rebuilder. That is why a PII-free graph costs no allocation, and why
 an unrebuildable type that happens to contain no PII still works.
 
-**Traversal safety.** Cycle detection via an identity set with enter/exit scoping (a shared node in
-a DAG is not a cycle). Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded by
-`maxCollectionElements`; the tail is dropped, which discloses nothing. Map keys are masked only when
-`maskMapKeys` is on, because masking them changes lookup semantics.
+**Traversal safety.** Cycle detection via an identity **map** from original to copy, with enter/exit
+scoping (a shared node in a DAG is not a cycle). The two halves differ on purpose:
+
+- An **object** back-reference becomes `null`. Its copy does not exist until every member is masked,
+  so there is nothing to point at — and it must never become the original, whose members are still
+  raw.
+- A **container** (array, collection, map) registers its copy *before* walking, so a back-reference
+  points at the copy and the cycle is reproduced against masked values. This is not a nicety: without
+  it a self-referential list unrolled to `maxDepth`, and one referencing itself twice unrolled
+  exponentially and took the caller down with it.
+
+The identity map is created **on entry to the first structure**, not per call to `mask`, and the
+methods that walk one take it as `@Nullable`. A cycle can only run through the chain of structures
+currently being walked, so masking a string or a number — which is most of what an integration hands
+over — allocates nothing at all. `mask(value, path)` short-circuits a leaf before it builds anything.
+
+Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded by `maxCollectionElements`;
+the tail is dropped, which discloses nothing. A copy that refuses a masked element — `ArrayDeque` and
+a naturally ordered `TreeSet` reject null, `ConcurrentHashMap` rejects it on both sides — drops that
+element rather than failing the enclosing object. Map keys are masked when `maskMapKeys` is on, which
+`strict()` enables and `relaxed()` does not; map *paths* are positional (`{0}`, `{0}{key}`), never
+the key itself, because paths reach observers and exception messages.
+
+**Paths are a buffer, not a string.** `WalkPath` (package-private, `application`) holds one
+`StringBuilder` that is pushed before descending into a member and reset after, and it becomes a
+`String` only where one is consumed: masking a value, reporting a finding, reporting a failure. The
+engine used to concatenate a path per member whether or not anything ever read it, which on a graph
+with no PII in it was the largest source of allocation in the walk. **Every push must be paired with
+a reset in a `finally`**: a structural failure is caught mid-walk and the parent carries on with its
+next member, so an unpaired push misattributes every path after it — an observer signal naming a
+field that had nothing to do with the event, which is worse than no signal. `WalkPathTest` asserts
+exact path sequences across containers, maps and a caught failure for exactly that reason.
+
+**Container shape is preserved, because it has to be.** `newCollectionLike` maps `SortedSet`→`TreeSet`,
+`Set`→`LinkedHashSet`, `List`→`ArrayList`, `Deque`/`Queue`→`ArrayDeque` (`List` is tested first —
+`LinkedList` is both), and `newMapLike` maps `SortedMap`→`TreeMap`, `ConcurrentMap`→`ConcurrentHashMap`.
+`Coercion` then fits whatever came back to the declared type. A shape mismatch is not cosmetic: it
+fails the declared-type check and takes the entire member to `null`, which looks exactly like a
+successful mask.
+
+**`Optional` is masked through, not around.** `descend` returns the *same* `Optional` when its
+contents did not change, and `maskLeaf` unwraps an annotated one, masks the value and re-wraps —
+handing the wrapper to a masker produces text that cannot fit an `Optional` slot, and the coercion
+that follows nulls the whole member. `OptionalInt`/`Long`/`Double` come back holding their zero.
 
 **Type coercion** (`Coercion.toDeclaredType`). Masking naturally produces text, but the member it
 goes back into may be a `BigDecimal` or an `int`. Rather than refuse, the value becomes the type's
@@ -117,6 +162,12 @@ the rebuilt object type-correct.
 3. **Content detection** — `TextSanitizer.classify()` returns a category only when a detector
    matches the value end to end.
 4. **`REDACT`** — the fallback. Never "pass through".
+
+Whatever was resolved is then **hardened** (`MaskingEngine.hardened`): a `neverPartiallyReveal()`
+category refuses any strategy that would show part of the value — only REDACT, HASH, TOKENIZE and
+NULLIFY survive; everything else becomes REDACT. Each revealing masker also carries the same guard
+as its first line, and `PiiDescriptor`'s compact constructor pins those categories to
+`Sensitivity.CRITICAL` so no policy threshold can switch their masking off.
 
 This chain is why `@PII Email email` produces email-shaped masking with no further configuration.
 
@@ -142,6 +193,14 @@ listed first for that reason.
 
 `sanitize()` returns the same `String` instance when nothing matched, which preserves the engine's
 no-change short-circuit.
+
+Two bounds sit in front of the detectors, both added because the scan dominated every measurement of
+this library. Each detector declares a **gate** — `PiiDetector.mightMatch(TextSignals)`, attached
+with `RegexDetector.gatedBy` — a necessary condition checked once against a one-pass summary, so a
+pattern that cannot match never runs. And the text itself is capped at `MaskingPolicy.maxTextLength`,
+with the remainder redacted and `onTextTruncated` reported. Read the gate rules in
+`datamask-invariants` before writing one: it is the one construct here that can be wrong with no
+symptom at all.
 
 ## Extension points
 
@@ -169,9 +228,10 @@ code wins and this table is stale.
 ```java
 static Builder builder()
 static DataMask withDefaults()          // ephemeral key; tests and local development only
-<T> T mask(T value)                     // masked copy, same type
-String maskText(CharSequence text)      // mask PII inside free text
-List<PiiFinding> scan(CharSequence)     // report without changing
+<T> T mask(T value)                     // masked copy, same type; null in, null out
+Object maskValue(Object, PiiCategory[, String path])   // one value whose category you already know
+String maskText(CharSequence text[, String path])      // mask PII inside free text
+List<PiiFinding> scan(CharSequence)     // report without changing; empty for null/empty text
 String pseudonymize(String value)       // same surrogate HASH would produce
 Optional<String> detokenize(String token)
 MaskingEngine engine()                  // what an integration module actually holds
@@ -181,12 +241,19 @@ TokenVault vault()
 
 `Builder`: `secret(String)`, `key(MaskKey)`, `policy(MaskingPolicy)`, `vault(TokenVault)`,
 `observer(MaskingObserver)`, `overrides(PolicyOverrides)`, `detectors(List<PiiDetector>)`,
-`detector(PiiDetector)`, `masker(MaskStrategy, Masker)`, `masker(Masker)`, `build()`.
+`detector(PiiDetector)`, `detectorFirst(PiiDetector)`, `masker(MaskStrategy, Masker)`,
+`masker(Masker)`, `secret(char[])`, `previousKey(MaskKey)`, `previousSecret(String)`,
+`compiler(MaskPlanCompiler)`, `build()`.
+
+`detector` appends, so a built-in wins any tie; `detectorFirst` puts yours ahead of them. An
+institution-specific format that happens to pass Luhn needs the second one or it is a payment card
+forever.
 
 ### `MaskingEngine` — the integration entry point
 
 ```java
 Object mask(Object value)
+Object mask(Object value, String rootPath)        // ALWAYS use this one from an integration
 String maskText(CharSequence text, String path)   // returns the SAME String when nothing matched
 Object maskDeclared(Object value, PiiDescriptor descriptor, Class<?> declaredType, String path)
 MaskingPolicy policy()
@@ -202,41 +269,78 @@ the `DataMask` one delegate to `dataMask.engine()`. That is what `DataMaskModule
 `maskDeclared` is the one to reach for when the integration already knows what a value is; `maskText`
 is for when it does not and the detectors have to decide.
 
+**Pass the root path.** `mask(value)` reports a structural failure at the root against the empty
+string, so a rule keyed on the scheme cannot tell which integration lost a value — and the root is
+the one site an integration otherwise cannot name. Every member path underneath is built from it,
+so `kafka:value/payments` gives `kafka:value/payments.iban`.
+
 ### `TextSanitizer`
 
 ```java
-String sanitize(CharSequence text, String path)   // same instance when nothing matched
-List<PiiFinding> scan(CharSequence text)          // document order, overlaps removed
+String sanitize(CharSequence text, String path)          // undeclared text -> onUnannotatedPii
+String sanitizeDeclared(CharSequence text, String path)  // FREEFORM_TEXT / SCAN -> onScanned
+List<PiiFinding> scan(CharSequence text)          // document order, overlaps removed; empty for null
 Optional<PiiCategory> classify(CharSequence text) // Some only when ONE detector matches end to end
 ```
 
 `classify` is what an integration uses to decide what a whole value is — a bind parameter, a span
 attribute, a Kafka header. `sanitize` is for text with prose around the PII.
 
+Both `sanitize` methods stop at `MaskingPolicy.maxTextLength` and redact the rest, reporting
+`onTextTruncated`. `scan` deliberately does not: it is an audit call somebody made on purpose, and
+answering it about the first 8 KB of a document would be worse than answering it slowly. The
+constructor takes the policy for that reason — `TextSanitizer(detectors, maskers, contexts, observer,
+policy)`.
+
 ### Domain types
 
 ```java
 record MaskingPolicy(Sensitivity threshold, FailureMode failureMode, String redactionPlaceholder,
-                     int maxDepth, int maxCollectionElements,
+                     int maxDepth, int maxCollectionElements, int maxTextLength,
                      boolean scanUnannotatedText, boolean maskMapKeys)
-    static strict() / relaxed(); applies(Sensitivity);
-    withThreshold / withFailureMode / withScanUnannotatedText / withRedactionPlaceholder
+    static strict() / relaxed(); applies(Sensitivity); DEFAULT_MAX_TEXT_LENGTH = 8192
+    complete wither set: withThreshold / withFailureMode / withScanUnannotatedText /
+    withRedactionPlaceholder / withMaskMapKeys / withMaxDepth / withMaxCollectionElements /
+    withMaxTextLength
+    // there is a seven-argument constructor without maxTextLength, for call sites written before
+    // it existed. Use a wither instead: the withers all go through the canonical constructor, and
+    // the short one silently resets the cap to its default.
 
 record PiiDescriptor(PiiCategory category, Sensitivity sensitivity, MaskStrategy strategy,
                      int keep, char padding, String replacement,
                      Class<? extends Masker> maskerType, String purpose)
-    static from(PII) / redacting(PiiCategory)     // `redacting` forces REDACT
+    static of(PiiCategory) / from(PII) / redacting(PiiCategory)   // `redacting` forces REDACT
+    complete wither set, one per component: withCategory / withSensitivity / withStrategy /
+    withKeep / withPadding / withReplacement / withMasker / withPurpose
+    // the canonical constructor is NOT the API — build with of(...) and refine with withers
     // compact constructor forces keep = 0 for category.neverPartiallyReveal()
 
 record PiiFinding(int start, int end, PiiCategory category, String detector, boolean confident)
     length(); overlaps(PiiFinding)
 
-record PolicyOverrides(Map<String, PiiDescriptor> byMember, Map<String, PiiDescriptor> byType)
-    static none(); forMember(Class<?>, String); forType(Class<?>); isEmpty()
+record PolicyOverrides(Map<String, PiiDescriptor> byMember, Map<String, PiiDescriptor> byType,
+                       Set<String> dropped)
+    static none() / builder(); two-arg constructor still means "no drops"
+    Builder: member(Class<?>, String, PiiDescriptor) / type(Class<?>, PiiDescriptor) / drop(Class<?>, String)
+    forMember(Class<?>, String); forType(Class<?>); drops(Class<?>, String); isEmpty()
 
 sealed interface MaskAction { Mask(PiiDescriptor) | Descend() | Keep() | Drop() }
+    // Drop is what PolicyOverrides.drop compiles to, and it is decided BEFORE @NoMask:
+    // the annotation is the author's claim, the override is the deployment disagreeing.
 
-interface PiiDetector      { String name(); List<PiiFinding> detect(CharSequence); }   // NOT functional
+class MaskingException  // final; build with atPath(path, message[, cause]) / withoutPath(message)
+
+interface PiiDetector      { String name(); List<PiiFinding> detect(CharSequence);
+                             default boolean mightMatch(TextSignals) { return true; } }  // NOT functional
+    // mightMatch is the pre-filter: a cheap necessary condition, checked once per text, that keeps
+    // a pattern from running where it provably cannot match. RegexDetector.gatedBy(Predicate)
+    // attaches one. Answer true when unsure — a wrong false is a value that is never masked.
+
+final class TextSignals    // one-pass summary of a text, the argument to mightMatch
+    static of(CharSequence); length(); digits(); uppercaseLetters(); longestUppercaseRun();
+    contains(char); containsAll(String); containsAny(String)
+    // ASCII only, and a character it does not track is reported PRESENT — unknown means run the
+    // detector. Every built-in pattern is written in explicit ASCII classes, so this answers exactly.
 interface Pseudonymizer    { String pseudonymize(String); }
 interface TokenVault       { String tokenize(String, PiiCategory); Optional<String> detokenize(String); }
 interface MaskContextFactory { MaskContext create(PiiDescriptor, MaskStrategy, String path, Class<?>); }
@@ -245,16 +349,57 @@ enum FailureMode { REDACT, THROW, PASS_THROUGH }
 enum Sensitivity { ... atLeast(Sensitivity) }
 ```
 
-`MaskingObserver` — all four methods `default`, so implement only what you need:
-`onMasked(String path, PiiCategory, MaskStrategy)`,
-`onUnannotatedPii(String path, PiiCategory, String detector)`, `onFailure(String path, Throwable)`,
-`onDepthLimitExceeded(String path)`. `MaskingObserver.NOOP` is the default.
+`MaskingObserver` — every method `default`, so implement only what you need. `MaskingObserver.NOOP`
+is the default.
+
+| Method | Fires when |
+|---|---|
+| `onMasked(path, PiiCategory, MaskStrategy)` | a declared PII value was masked |
+| `onUnannotatedPii(path, PiiCategory, detector)` | a detector hit a value **nobody declared** — the one to alert on |
+| `onScanned(path, PiiCategory, detector)` | a detector hit inside a value declared `FREEFORM_TEXT`/`SCAN` — the design working |
+| `onFailure(path, Throwable)` | masking failed and the `FailureMode` was applied |
+| `onDepthLimitExceeded(path)` | the graph was deeper than `maxDepth` |
+| `onCollectionTruncated(path, int kept)` | a collection or map was cut at `maxCollectionElements` |
+| `onTextTruncated(path, int scanned)` | a string was longer than `maxTextLength`; the tail was redacted unread |
+
+The first pair and the last pair each used to be one method. Merging them is what made the alerting
+signal unusable: an annotated free-text field produces detector hits on every request, and a
+truncated collection reported a synthesised index that differed between the list and map cases.
+
+### The static hand-off — `InstalledDataMask` / `ResolvedMasker<T>`
+
+For a plugin the framework builds by class name, before the application has a container — a logback
+appender, a log4j2 plugin, a Kafka interceptor. Do not hand-roll this again; three modules did, and
+the caching rule is the part that is easy to get wrong.
+
+```java
+public final class DataMaskLogback {
+    private static final InstalledDataMask INSTALLED = InstalledDataMask.holder();
+    public static void install(DataMask d) { INSTALLED.install(d); }
+    public static Optional<DataMask> installed() { return INSTALLED.installed(); }
+    public static void uninstall() { INSTALLED.uninstall(); }
+    static InstalledDataMask holder() { return INSTALLED; }
+}
+
+// in the plugin:
+ResolvedMasker.of(masker)                                    // it was handed its own
+ResolvedMasker.installed(holder, DataMask::engine-ish, this::ephemeralFallback)
+```
+
+The derived masker is keyed on the **identity of the installed instance**, which stays null while
+nothing is installed — so the fallback is built once rather than per event, and a late install still
+rewires. The `fallback` supplier is where the integration logs its warning, through its own
+framework's internal status channel, never through the logger being masked; that is what keeps
+core free of a logging dependency. The "one static per classloader" caveat is documented on
+`InstalledDataMask` rather than in each integration.
 
 ### `datamask-api` — what a custom masker sees
 
 ```java
 interface Masker { Object mask(Object value, MaskContext context);
                    default boolean supports(Class<?> type) { return true; } }
+    // supports() receives the value's RUNTIME class, not the declared type. A member declared
+    // Object says nothing about what a masker must handle, and answering "no" means redaction.
 
 interface MaskContext { PiiCategory category(); Sensitivity sensitivity(); MaskStrategy strategy();
                         int keep(); char padding(); String replacement(); String path();
@@ -266,8 +411,21 @@ interface MaskContext { PiiCategory category(); Sensitivity sensitivity(); MaskS
 (`Masker.class`), `keep` (-1 = category default), `padding` (`'*'`), `replacement` (`""`), `purpose`
 (`""`). `@NoMask` requires a `justification`.
 
-`MaskKey`: `ofSecret(String)` (rejects under 16 bytes), `of(byte[])`, `ephemeral()`, `spec()`,
-`isEphemeral()`.
+`MaskKey`: `ofSecret(String)` / `ofSecret(char[])` (reject under 16 bytes; prefer the `char[]` one —
+a `String` cannot be wiped), `of(byte[])`, `ephemeral()`, `forPurpose(String)`, `spec()` (a fresh
+one per call, so `destroy()` can promise something), `id()`, `algorithm()`, `destroy()`,
+`isDestroyed()`, `isEphemeral()`.
+
+`HmacPseudonymizer` writes `~<keyId>:<digest>`. Take a keyring — `new HmacPseudonymizer(current,
+previous)` — and use `matches(value, pseudonym)` to confirm a surrogate issued before a rotation;
+`DataMask.pseudonymMatches` is the facade for it. **Do not drop the key id from the format**: without
+it, rotating a secret silently turns every pseudonym written beforehand into an unjoinable stranger,
+with no error and nothing in a log to explain it.
+
+`TokenVault`: the default is `RejectingTokenVault`, which **refuses**. `InMemoryTokenVault` is opt-in
+via `Builder.vault(...)`, bounded by capacity and a 15-minute TTL. Never make the in-memory one the
+default again — `TOKENIZE` appearing to work while raw PII accumulates in a heap map, with a
+`detokenize` any caller can reach, is worse than it failing.
 
 ## Writing an integration module
 

@@ -1,0 +1,62 @@
+// Deliberately applies the base conventions rather than datamask.java-conventions: this module is
+// measurement, not a library, and must never reach Maven Central. Same reasoning, and the same
+// mechanism, as datamask-architecture-tests.
+plugins {
+    id 'datamask.java-base-conventions'
+}
+
+description = 'JMH benchmarks: what the masking engine and the logging integrations actually cost per event.'
+
+dependencies {
+    // The engine, and both logging integrations, because the headline number is a comparison
+    // between them and the appender underneath.
+    implementation project(':datamask-core')
+    implementation project(':datamask-logback')
+    implementation project(':datamask-log4j2')
+    // The JDBC wrapper proxies result sets, which is the only cost in this library that scales with
+    // the size of a result rather than with the number of calls. It is measured here because the
+    // escape hatch that turns it off should be taken on a number rather than on a suspicion.
+    implementation project(':datamask-jdbc')
+
+    implementation libs.jmh.core
+    annotationProcessor libs.jmh.generator.annprocess
+
+    // The benchmark domain gets mask plans written for it at compile time, which is what lets
+    // PlanCompilerBenchmark measure the generated compiler against the reflective one on the same
+    // types instead of on two different domains.
+    annotationProcessor project(':datamask-build-processor')
+}
+
+// JMH is wired by hand rather than through me.champeau.jmh, for two reasons. The benchmarks live in
+// src/main/java, so the classes are in this module's own output — which is what puts them in front
+// of ModuleDependencyTest like every other module's code, instead of in a source set nothing else
+// sees. And the whole of the plugin's value here is one annotation processor and one JavaExec, both
+// of which are four lines, against a build-classpath plugin to keep compatible with the Gradle
+// version this build is pinned to.
+tasks.register('jmh', JavaExec) {
+    group = 'verification'
+    description = 'Runs the JMH benchmarks. Pass harness arguments with -Pjmh.args="..."'
+
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.openjdk.jmh.Main'
+
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+
+    // Everything the harness understands, straight through: -f, -wi, -i, a benchmark name filter,
+    // -rf json -rff results.json. Quoted as one property so a filter regex survives the shell.
+    def harnessArguments = providers.gradleProperty('jmh.args').orElse('')
+    argumentProviders.add({ harnessArguments.get().tokenize(' ') } as CommandLineArgumentProvider)
+
+    // A benchmark run is never up to date: the point of running it again is that the machine, the
+    // JIT or the code changed.
+    outputs.upToDateWhen { false }
+}
+
+// Deliberately NOT wired into `check`, and it must stay that way. `./gradlew build` compiles the
+// benchmarks — so a broken one fails a PR like any other compilation error — but never runs them.
+// A full set is tens of minutes, and a shared CI runner's numbers are too noisy to gate a merge on:
+// a benchmark that fails a PR for reasons nobody can reproduce is a benchmark somebody deletes.
+// Running them is `.github/workflows/benchmarks.yml`, on dispatch and monthly. If you find yourself
+// adding `check.dependsOn jmh`, read that workflow first — what you want is probably a dispatch run.

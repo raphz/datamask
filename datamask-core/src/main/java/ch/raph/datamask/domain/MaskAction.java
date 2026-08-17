@@ -12,7 +12,13 @@ public sealed interface MaskAction {
     /** Copy the value across untouched. */
     record Keep() implements MaskAction {}
 
-    /** Omit the value entirely. */
+    /**
+     * Omit the value entirely.
+     *
+     * <p>What a {@link PolicyOverrides} drop compiles to. Distinct from masking to a placeholder:
+     * the engine rebuilds with {@code null} in its place, and a serializer leaves the property out
+     * altogether, so not even the field's existence is disclosed.
+     */
     record Drop() implements MaskAction {}
 
     MaskAction DESCEND = new Descend();

@@ -1,15 +1,19 @@
 package ch.raph.datamask.infrastructure.reflect;
 
+import ch.raph.datamask.api.MaskStrategy;
+import ch.raph.datamask.api.Masker;
 import ch.raph.datamask.api.NoMask;
 import ch.raph.datamask.api.PII;
+import ch.raph.datamask.api.PiiCategory;
+import ch.raph.datamask.api.Sensitivity;
 import ch.raph.datamask.application.MaskPlanCompiler;
 import ch.raph.datamask.domain.MaskAction;
 import ch.raph.datamask.domain.MaskPlan;
-import ch.raph.datamask.domain.MaskingException;
 import ch.raph.datamask.domain.MemberPlan;
 import ch.raph.datamask.domain.PiiDescriptor;
 import ch.raph.datamask.domain.PolicyOverrides;
 import ch.raph.datamask.domain.ValueRebuilder;
+import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -17,6 +21,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.List;
@@ -94,9 +99,10 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
                     .asSpreader(Object[].class, components.length);
             return new MaskPlan(type, members, (original, values) -> canonical.invoke(values));
         } catch (IllegalAccessException | NoSuchMethodException e) {
-            // An inaccessible record — a private record in a module that is not open to us. Passing
-            // it through would leak, so the plan refuses to rebuild and the engine redacts instead.
-            return unrebuildable(type, "record components are not accessible", e);
+            // An inaccessible record — a private record in a module that is not open to us. Nothing
+            // proved it carries no PII, so the plan is marked failed and the engine treats every
+            // value of the type as a structural failure: redacted or thrown, never passed through.
+            return MaskPlan.failed(type, "record components are not accessible (" + e.getMessage() + ")");
         }
     }
 
@@ -123,29 +129,33 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
                                 noMaskOn(type, field))));
             }
         } catch (IllegalAccessException e) {
-            return unrebuildable(type, "fields are not accessible", e);
+            return MaskPlan.failed(type, "fields are not accessible (" + e.getMessage() + ")");
         }
 
         return new MaskPlan(type, members, rebuilderFor(type, fields, lookup));
     }
 
     /**
-     * Beans are rebuilt by an all-arguments constructor when one matches the field order — which is
-     * what Lombok's {@code @AllArgsConstructor} and Jackson's {@code @ConstructorProperties} both
-     * produce — and otherwise by a no-argument constructor plus field writes.
+     * Beans are rebuilt by an all-arguments constructor when one can be matched to the fields —
+     * which is what Lombok's {@code @AllArgsConstructor} and Jackson's
+     * {@code @ConstructorProperties} both produce — and otherwise by a no-argument constructor plus
+     * field writes.
      */
     private ValueRebuilder rebuilderFor(Class<?> type, List<Field> fields, MethodHandles.Lookup lookup) {
-        Class<?>[] fieldTypes = fields.stream().map(Field::getType).toArray(Class<?>[]::new);
-
         for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-            if (java.util.Arrays.equals(constructor.getParameterTypes(), fieldTypes)) {
-                try {
-                    MethodHandle handle =
-                            lookup.unreflectConstructor(constructor).asSpreader(Object[].class, fieldTypes.length);
+            int[] order = fieldOrderFor(constructor, fields);
+            if (order == null) {
+                continue;
+            }
+            try {
+                MethodHandle handle =
+                        lookup.unreflectConstructor(constructor).asSpreader(Object[].class, fields.size());
+                if (isIdentity(order)) {
                     return (original, values) -> handle.invoke(values);
-                } catch (IllegalAccessException ignored) {
-                    // Try the next candidate.
                 }
+                return (original, values) -> handle.invoke(permute(values, order));
+            } catch (IllegalAccessException ignored) {
+                // Try the next candidate.
             }
         }
 
@@ -169,7 +179,109 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
         }
     }
 
+    /**
+     * Which field feeds each parameter of a candidate constructor, or {@code null} when the two
+     * cannot be matched safely.
+     *
+     * <p>Matching on parameter types alone is only sound while the types are distinct. Two
+     * same-typed parameters declared in a different order than the fields would compile, run, and
+     * quietly swap two values in every masked copy — an account holder's name appearing under
+     * someone else's reference, with nothing to notice it by. So when names are unavailable and a
+     * type repeats, this refuses the constructor and lets the setter path take over.
+     *
+     * <p>Names come from {@code -parameters} or from {@code @ConstructorProperties}, which Lombok
+     * and the Jackson tooling both emit. With names available the order is free: parameters are
+     * matched to fields by name and the values are permuted at rebuild time.
+     */
+    private static int[] fieldOrderFor(Constructor<?> constructor, List<Field> fields) {
+        Class<?>[] parameterTypes = constructor.getParameterTypes();
+        if (parameterTypes.length != fields.size() || parameterTypes.length == 0) {
+            return null;
+        }
+        List<String> names = parameterNames(constructor);
+        if (names == null && hasRepeatedType(fields)) {
+            return null;
+        }
+
+        int[] order = new int[parameterTypes.length];
+        boolean[] taken = new boolean[fields.size()];
+        for (int i = 0; i < parameterTypes.length; i++) {
+            int match = -1;
+            for (int f = 0; f < fields.size(); f++) {
+                Field field = fields.get(f);
+                if (taken[f] || field.getType() != parameterTypes[i]) {
+                    continue;
+                }
+                if (names != null && !field.getName().equals(names.get(i))) {
+                    continue;
+                }
+                match = f;
+                break;
+            }
+            if (match < 0) {
+                return null;
+            }
+            taken[match] = true;
+            order[i] = match;
+        }
+        return order;
+    }
+
+    /**
+     * Parameter names when the class carries them, {@code null} otherwise. {@code @ConstructorProperties}
+     * is read by name rather than imported, because it lives in {@code java.desktop} — a module a
+     * trimmed runtime image is entitled to leave out.
+     */
+    private static List<String> parameterNames(Constructor<?> constructor) {
+        for (Annotation annotation : constructor.getAnnotations()) {
+            if (!annotation.annotationType().getName().equals("java.beans.ConstructorProperties")) {
+                continue;
+            }
+            try {
+                Object value = annotation.annotationType().getMethod("value").invoke(annotation);
+                if (value instanceof String[] declared && declared.length == constructor.getParameterCount()) {
+                    return List.of(declared);
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // Fall through to the reflected parameter names.
+            }
+        }
+
+        Parameter[] parameters = constructor.getParameters();
+        if (parameters.length == 0 || !parameters[0].isNamePresent()) {
+            return null;
+        }
+        return java.util.Arrays.stream(parameters).map(Parameter::getName).toList();
+    }
+
+    private static boolean hasRepeatedType(List<Field> fields) {
+        return fields.stream().map(Field::getType).distinct().count() != fields.size();
+    }
+
+    private static boolean isIdentity(int[] order) {
+        for (int i = 0; i < order.length; i++) {
+            if (order[i] != i) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Object[] permute(Object[] values, int[] order) {
+        Object[] arguments = new Object[order.length];
+        for (int i = 0; i < order.length; i++) {
+            arguments[i] = values[order[i]];
+        }
+        return arguments;
+    }
+
     private MaskAction actionFor(Class<?> owner, String name, Class<?> declaredType, PII annotation, NoMask exemption) {
+        // Before the exemption, deliberately: @NoMask is a claim by the code's author that a member
+        // carries nothing worth hiding, and an override is the deployment disagreeing. The
+        // deployment is the one being audited, so it wins.
+        if (overrides.drops(owner, name)) {
+            return MaskAction.DROP;
+        }
         if (exemption != null) {
             return MaskAction.KEEP;
         }
@@ -180,10 +292,7 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
         }
         PII onType = declaredType.getAnnotation(PII.class);
         if (annotation != null) {
-            PiiDescriptor descriptor = PiiDescriptor.from(annotation);
-            // A bare `@PII Email email` defers to whatever the Email type itself declares, which is
-            // both more precise and cheaper than working the category out from the value's content.
-            return new MaskAction.Mask(isBare(descriptor) && onType != null ? PiiDescriptor.from(onType) : descriptor);
+            return new MaskAction.Mask(merge(annotation, onType));
         }
         if (onType != null) {
             return new MaskAction.Mask(PiiDescriptor.from(onType));
@@ -195,19 +304,41 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
 
         // Unannotated text still descends: the policy may have content scanning enabled, which is
         // how PII that nobody declared gets caught.
-        if (CharSequence.class.isAssignableFrom(declaredType)) {
+        if (Types.isScannableText(declaredType)) {
             return MaskAction.DESCEND;
         }
         return Types.isLeaf(declaredType) ? MaskAction.KEEP : MaskAction.DESCEND;
     }
 
-    /** Whether the annotation adds nothing of its own and is purely a marker. */
-    private static boolean isBare(PiiDescriptor descriptor) {
-        return descriptor.strategy() == ch.raph.datamask.api.MaskStrategy.AUTO
-                && descriptor.category() == ch.raph.datamask.api.PiiCategory.UNSPECIFIED
-                && !descriptor.hasCustomMasker()
-                && descriptor.replacement().isEmpty()
-                && descriptor.keep() == -1;
+    /**
+     * Combines the {@code @PII} on a member with the one on the member's own type, attribute by
+     * attribute: whatever the member states explicitly wins, and everything it left at the default
+     * is inherited from the type.
+     *
+     * <p>The merge is per attribute rather than all-or-nothing because the alternative loses data
+     * silently in both directions. {@code @PII(sensitivity = LOW) Email email} used to discard the
+     * member's sensitivity, and {@code @PII(keep = 2) Email email} used to discard the type's EMAIL
+     * category and mask an address as an anonymous string — neither of which the author would ever
+     * see, because both still produce a masked value.
+     *
+     * <p>"Explicit" is measured against the annotation defaults, which is the only signal the
+     * reflection API offers: an attribute set to its default is indistinguishable from one left out.
+     * Stating {@code sensitivity = HIGH} on the member therefore reads as unset — acceptable,
+     * because HIGH is already what the type would have to override to matter.
+     */
+    private static PiiDescriptor merge(PII member, PII onType) {
+        if (onType == null) {
+            return PiiDescriptor.from(member);
+        }
+        return new PiiDescriptor(
+                member.category() != PiiCategory.UNSPECIFIED ? member.category() : onType.category(),
+                member.sensitivity() != Sensitivity.HIGH ? member.sensitivity() : onType.sensitivity(),
+                member.strategy() != MaskStrategy.AUTO ? member.strategy() : onType.strategy(),
+                member.keep() != -1 ? member.keep() : onType.keep(),
+                member.padding() != '*' ? member.padding() : onType.padding(),
+                !member.replacement().isEmpty() ? member.replacement() : onType.replacement(),
+                member.masker() != Masker.class ? member.masker() : onType.masker(),
+                !member.purpose().isEmpty() ? member.purpose() : onType.purpose());
     }
 
     /** Reads {@code @PII} from the field or, failing that, from its getter. */
@@ -267,18 +398,18 @@ public final class ReflectiveMaskPlanCompiler implements MaskPlanCompiler {
         }
     }
 
-    private static MaskPlan unrebuildable(Class<?> type, String reason, Throwable cause) {
-        return new MaskPlan(type, List.of(), unrebuildableRebuilder(type, reason + ": " + cause.getMessage()));
-    }
-
+    /**
+     * A rebuilder for a type whose members are readable but that offers no way to build a copy. The
+     * members stay in the plan, so a PII-free instance still passes through the no-change
+     * short-circuit; only when something actually changed does this throw — a plain runtime
+     * exception rather than a {@code MaskingException}, so the engine degrades it per the failure
+     * policy (redact under REDACT, surface under THROW) instead of crashing the caller.
+     */
     private static ValueRebuilder unrebuildableRebuilder(Class<?> type, String reason) {
         return (original, values) -> {
-            throw new MaskingException(
-                    type.getName(),
-                    "cannot rebuild a masked copy because " + reason
-                            + ". Use a record, add a no-argument or all-arguments constructor, "
-                            + "or mask at serialisation time with the Jackson module instead",
-                    null);
+            throw new IllegalStateException("cannot rebuild a masked copy of " + type.getName() + " because " + reason
+                    + ". Use a record, add a no-argument or all-arguments constructor, "
+                    + "or mask at serialisation time with the Jackson module instead");
         };
     }
 }

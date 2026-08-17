@@ -11,10 +11,10 @@ import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.serialization.Serializer;
 
 /**
- * Reads this module's settings out of a producer's configuration map.
+ * Reads this module's settings out of a client's configuration map — a producer's or a consumer's.
  *
  * <p>Each value is accepted both as the string a {@code .properties} file gives and as the real type
- * a map built in code gives, because a producer is configured either way and a plugin sees whichever
+ * a map built in code gives, because a client is configured either way and a plugin sees whichever
  * the application used.
  */
 final class Settings {

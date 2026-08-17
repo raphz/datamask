@@ -1,10 +1,11 @@
 package ch.raph.datamask.jackson;
 
-import ch.raph.datamask.application.MaskingEngine;
 import tools.jackson.core.JsonGenerator;
-import tools.jackson.core.TokenStreamContext;
+import tools.jackson.core.JsonToken;
+import tools.jackson.core.type.WritableTypeId;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
+import tools.jackson.databind.jsontype.TypeSerializer;
 
 /**
  * Runs the detectors over every string nobody declared.
@@ -14,41 +15,41 @@ import tools.jackson.databind.ValueSerializer;
  * Each hit is reported to the {@code MaskingObserver}, which is the earliest warning that a field
  * has started carrying PII nobody classified.
  *
- * <p>Registered for {@code String} rather than per property so that a value anywhere in the
- * document is covered — inside a collection, as a map value, or at the root. Properties the plan
- * already decided on never arrive here.
+ * <p>Registered for {@code CharSequence} as well as {@code String} rather than per property, so that
+ * a value anywhere in the document is covered — inside a collection, as a map value, at the root, or
+ * held in a {@code StringBuilder}. Properties the plan already decided on never arrive here.
  */
-final class ScanningStringSerializer extends ValueSerializer<String> {
+final class ScanningStringSerializer extends ValueSerializer<CharSequence> {
 
-    private final MaskingEngine engine;
+    private final TextScanner scanner;
 
-    ScanningStringSerializer(MaskingEngine engine) {
-        this.engine = engine;
+    ScanningStringSerializer(TextScanner scanner) {
+        this.scanner = scanner;
     }
 
     @Override
-    public void serialize(String value, JsonGenerator generator, SerializationContext context) {
-        generator.writeString(engine.maskText(value, pathOf(generator)));
-    }
-
-    @Override
-    public Class<String> handledType() {
-        return String.class;
+    public void serialize(CharSequence value, JsonGenerator generator, SerializationContext context) {
+        generator.writeString(scanner.scan(value, TextScanner.pathOf(generator)));
     }
 
     /**
-     * The enclosing property name, which is what an observer needs in order to find the field that
-     * leaked. Deliberately not the full JSON pointer: this runs on every string in every document,
-     * and building a pointer would allocate on each one.
+     * The polymorphic path, for a string that landed in a slot carrying {@code @JsonTypeInfo}. The
+     * base {@code ValueSerializer} refuses to write a type id and would abort the document, so a
+     * string in a polymorphic slot has to be handled here — a scanner that only works outside
+     * polymorphism would be a scanner an application has to switch off.
      */
-    private static String pathOf(JsonGenerator generator) {
-        for (TokenStreamContext context = generator.streamWriteContext();
-                context != null;
-                context = context.getParent()) {
-            if (context.hasCurrentName()) {
-                return context.currentName();
-            }
-        }
-        return "text";
+    @Override
+    public void serializeWithType(
+            CharSequence value, JsonGenerator generator, SerializationContext context, TypeSerializer typeSerializer) {
+        String masked = scanner.scan(value, TextScanner.pathOf(generator));
+        WritableTypeId typeId = typeSerializer.writeTypePrefix(
+                generator, context, typeSerializer.typeId(masked, JsonToken.VALUE_STRING));
+        generator.writeString(masked);
+        typeSerializer.writeTypeSuffix(generator, context, typeId);
+    }
+
+    @Override
+    public Class<CharSequence> handledType() {
+        return CharSequence.class;
     }
 }

@@ -17,7 +17,7 @@ public record Customer(
         String country) { }
 
 Customer safe = dataMask.mask(customer);
-// Customer[email=Email[value=j*******@e******.com], iban=~7Kd9fPqR2xLmA0Zt, country=CH]
+// Customer[email=Email[value=j*******@e******.com], iban=~a3Kd9Q:7fPqR2xLmA0Ztb1Xw, country=CH]
 ```
 
 The target industry is **banking and fintech**, with Swiss specifics (AVS/AHV numbers, Swiss IBANs)
@@ -30,14 +30,14 @@ auditor of the code is a compliance officer.
 |---|---|
 | Group | `ch.raph.datamask` |
 | Root package | `ch.raph.datamask` |
-| Published Java baseline | **21** (`options.release = 21`) |
+| Published Java baseline | **25** (`options.release = 25`) |
 | Build/test JDK | **25** (toolchain) |
 | Gradle | 9.7, Groovy DSL |
 | Spring Boot target | **4.1.0** (implies Jackson 3, `tools.jackson.*`) |
 | Licence | Apache 2.0 |
 
-Java 21 rather than 25 is deliberate: this is a library banks embed everywhere, and most banking
-production estates run 21. Build on 25, publish for 21.
+The baseline was raised from 21 to 25 (current LTS) in August 2026: the library uses Java 25
+language and API features freely — `javax.crypto.KDF` (HKDF), record patterns, unnamed variables.
 
 ## Module map
 
@@ -50,7 +50,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-logback` | **implemented** | Masking appender: log arguments, message bodies, MDC, exception messages |
 | `datamask-log4j2` | **implemented** | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
-| `datamask-kafka` | **implemented** | Masking serializer + producer interceptor, headers included |
+| `datamask-kafka` | **implemented** | Masking serializer, Streams serde, producer and consumer interceptors, headers included |
 | `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
 | `datamask-jpa` | scaffolded, empty | `AttributeConverter`s for pseudonymised columns at rest |
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |
@@ -58,6 +58,7 @@ production estates run 21. Build on 25, publish for 21.
 | `datamask-spring-boot-starter` | **implemented** | Core plus the auto-configuration; integrations stay opt-in |
 | `datamask-check-processor` | **implemented** | Compile-time validation of `@PII` usage |
 | `datamask-build-processor` | **implemented** | Mask plans generated at compile time; `GeneratedMaskPlanCompiler` in core reads them |
+| `datamask-benchmarks` | **implemented** | JMH: what masking costs per log event and per object graph. Never published |
 | `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
@@ -65,7 +66,9 @@ production estates run 21. Build on 25, publish for 21.
 
 `datamask-architecture-tests` is not an artifact: it applies `datamask.java-base-conventions` rather
 than `datamask.java-conventions` so it has no route to Central, and both the BOM and the coverage
-aggregation exclude it by name.
+aggregation exclude it by name. `datamask-benchmarks` is unpublished by exactly the same mechanism —
+copy that pattern for anything else that verifies or measures the library rather than being part of
+it.
 
 **Implementing a module is not finished until `ModuleDependencyTest` knows about it** — the module map
 above and that test are the two places a new module has to be registered, and
@@ -111,8 +114,15 @@ autoconfigure module's `build.gradle`, and a `datamask.<name>.enabled` component
 (`DataMaskJacksonAutoConfiguration`), or an installer bean filling in a static hand-off for a plugin
 the framework builds by class name (`LogbackDataMaskInstaller`, `KafkaDataMaskInstaller`).
 
-A benchmark module (JMH) was considered and deliberately deferred — worth adding once an
-integration puts the engine on a logging hot path.
+The benchmark module was deferred until an integration put the engine on a logging hot path; logback
+and log4j2 did, so **`datamask-benchmarks` now exists** and the deferral is over. Its headline is a
+clean `INFO` line through the masking appender against the same event through a plain one, and its
+first result is worth knowing before touching anything on that path: a clean line cost ~11 µs, and
+~98% of that was the unfiltered regex fan-out in `TextSanitizer`, not the engine. **Gating the
+detectors took that to ~0.53 µs** (~3.5 µs on a log line with digits and colons in it, which is the
+figure to quote for real text). See `datamask-benchmarks/README.md`; a performance change to the core
+or to a logging module should come with a before/after from it, and `docs/IMPROVEMENTS.md` holds the
+baseline table both columns live in.
 
 Two things the implemented integrations established that the remaining ones should copy: an
 integration takes a `MaskingEngine` (with a `DataMask` convenience constructor), and it returns the

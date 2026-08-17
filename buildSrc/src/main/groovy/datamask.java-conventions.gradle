@@ -4,3 +4,22 @@ plugins {
     id 'datamask.java-base-conventions'
     id 'datamask.publishing-conventions'
 }
+
+// JPMS identity. Without Automatic-Module-Name a modular application derives the module name from
+// the jar's file name, which changes with the version and is not something we can keep stable — so
+// the name would be part of the public API without ever having been chosen. Declaring it here fixes
+// it now; a real module-info comes later and must keep the same name.
+//
+// Only published modules get one, which is why this lives in java-conventions rather than
+// java-base-conventions: datamask-architecture-tests is verification, never an artifact, and a
+// module name for it would be a name nobody can depend on.
+//
+// The default is derived from the project name (datamask-jdbc -> ch.raph.datamask.jdbc). A module
+// whose root package does not follow from its name overrides `automaticModuleName` in its own build
+// script — the name has to match the package the module actually ships, because that is the whole
+// point of it.
+ext.automaticModuleName = 'ch.raph.datamask.' + project.name.replaceFirst('^datamask-', '').replace('-', '.')
+
+tasks.named('jar', Jar) {
+    manifest.attributes('Automatic-Module-Name': providers.provider { project.automaticModuleName })
+}

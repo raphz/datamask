@@ -1,9 +1,8 @@
 package ch.raph.datamask.logback;
 
 import ch.raph.datamask.application.DataMask;
-import java.util.Objects;
+import ch.raph.datamask.application.InstalledDataMask;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Where a {@link MaskingAppender} configured in XML finds its {@link DataMask}.
@@ -12,39 +11,39 @@ import java.util.concurrent.atomic.AtomicReference;
  * DataMaskLogback.install(DataMask.builder().secret(System.getenv("DATAMASK_SECRET")).build());
  * }
  *
- * <p>A static hand-off rather than a constructor argument because of when logging starts. {@code
- * logback.xml} is read before an application has a container, a context or any beans, so the appender
- * cannot be handed anything at that point — but it can look, per event, for something installed since.
- * Every appender without its own instance uses whatever is installed here, and one installed after the
- * first log line is picked up from the next one.
+ * <p>A static hand-off rather than a constructor argument because of when logging starts: {@code
+ * logback.xml} is read before an application has a container, a context or any beans. {@link
+ * InstalledDataMask} is the shared support type behind it, and carries why the hand-off is static and
+ * what a per-classloader static field means for a deployment; this class only names it for logback.
  *
- * <p>Install once, during startup, before anything worth masking is logged. An application without a
- * secret to configure can leave this alone: an appender with nothing to use falls back to strict
- * masking under an ephemeral key, which masks everything correctly but makes pseudonyms incomparable
- * across restarts.
+ * <p>Install once, during startup, before anything worth masking is logged. An appender re-reads this
+ * on every event, so an instance installed after the first log line is picked up from the next one.
+ * An application without a secret to configure can leave this alone: an appender with nothing to use
+ * falls back to strict masking under an ephemeral key, which masks everything correctly but makes
+ * pseudonyms incomparable across restarts.
  */
 public final class DataMaskLogback {
 
-    private static final AtomicReference<DataMask> INSTALLED = new AtomicReference<>();
+    private static final InstalledDataMask INSTANCE = InstalledDataMask.holder();
 
     private DataMaskLogback() {}
 
     /** Makes this instance the one every {@link MaskingAppender} without its own will use. */
     public static void install(DataMask dataMask) {
-        INSTALLED.set(Objects.requireNonNull(dataMask, "dataMask"));
+        INSTANCE.install(dataMask);
     }
 
     public static Optional<DataMask> installed() {
-        return Optional.ofNullable(INSTALLED.get());
+        return INSTANCE.installed();
     }
 
     /** Forgets the installed instance. For tests, and for a container shutting down. */
     public static void uninstall() {
-        INSTALLED.set(null);
+        INSTANCE.uninstall();
     }
 
-    /** The nullable form, for the appender: this is read on every event. */
-    static DataMask current() {
-        return INSTALLED.get();
+    /** The holder itself, for the appender's {@code ResolvedMasker}: this is read on every event. */
+    static InstalledDataMask holder() {
+        return INSTANCE;
     }
 }

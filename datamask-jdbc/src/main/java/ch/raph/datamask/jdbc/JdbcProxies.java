@@ -6,13 +6,14 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.CallableStatement;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 
 /**
- * The wrapper itself: a JDK proxy per connection, statement and result set that forwards every call
- * and sanitises every {@link java.sql.SQLException} on the way back out.
+ * The wrapper itself: a JDK proxy per connection, statement, result set and metadata object that
+ * forwards every call and sanitises every {@link java.sql.SQLException} on the way back out.
  *
  * <p>A proxy rather than hand-written delegates because the interfaces involved carry well over
  * three hundred methods between them, all of which would have to be forwarded identically and every
@@ -23,7 +24,11 @@ import java.sql.Statement;
  * <p>Result sets are proxied too, which is the one place the cost is worth stating plainly: an
  * error can surface during a fetch rather than at execution — a cast failing on a stored value, a
  * statement timeout — and in cursor mode that means it arrives from {@code next()}. Leaving result
- * sets unwrapped would put a hole exactly in the path that reads data.
+ * sets unwrapped would put a hole exactly in the path that reads data. It is also the only part of
+ * this wrapper whose cost scales with the size of the result rather than with the number of
+ * statements, which is why it is the one part that can be turned off — see
+ * {@link MaskingDataSource#withoutResultSetWrapping()}, and the measured figures behind it in
+ * {@code datamask-benchmarks}.
  */
 final class JdbcProxies {
 
@@ -112,7 +117,36 @@ final class JdbcProxies {
                         new Class<?>[] {statementInterface(statement)},
                         new StatementHandler(statement, masking, sql, proxy));
             }
+            // getMetaData is a way back out of the wrapper: DatabaseMetaData.getConnection() hands
+            // back the driver's own connection, and every statement created from that one would
+            // escape masking entirely.
+            if (result instanceof DatabaseMetaData metaData) {
+                return proxy(DatabaseMetaData.class, new MetaDataHandler(metaData, masking, proxy));
+            }
             return result;
+        }
+    }
+
+    /**
+     * Metadata queries return result sets like any other, and they fail like any other — a
+     * permission error naming the object asked for, a timeout mid-fetch. Both are wrapped here for
+     * the same reasons the statement path is.
+     */
+    private static final class MetaDataHandler extends JdbcHandler {
+
+        private final Object connectionProxy;
+
+        MetaDataHandler(DatabaseMetaData target, JdbcMasking masking, Object connectionProxy) {
+            super(target, masking);
+            this.connectionProxy = connectionProxy;
+        }
+
+        @Override
+        Object adapt(Object proxy, Method method, Object[] args, Object result) {
+            if (result instanceof ResultSet resultSet && masking.wrapsResultSets()) {
+                return proxy(ResultSet.class, new ResultSetHandler(resultSet, masking, null));
+            }
+            return result instanceof Connection && connectionProxy != null ? connectionProxy : result;
         }
     }
 
@@ -168,7 +202,7 @@ final class JdbcProxies {
 
         @Override
         Object adapt(Object proxy, Method method, Object[] args, Object result) {
-            if (result instanceof ResultSet resultSet) {
+            if (result instanceof ResultSet resultSet && masking.wrapsResultSets()) {
                 return Proxy.newProxyInstance(
                         JdbcProxies.class.getClassLoader(),
                         new Class<?>[] {ResultSet.class},

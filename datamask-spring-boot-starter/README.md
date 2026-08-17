@@ -16,9 +16,14 @@ is wired to it. What that means per module is in
 [`datamask-spring-boot-autoconfigure`](../datamask-spring-boot-autoconfigure/README.md), which is
 where the properties are documented too.
 
-**Without `datamask.secret` the context will not start.** That is deliberate and it is the one
-decision in this library that is not negotiable — see the auto-configuration's README for why a
-default key would be worse than a failed deployment.
+**Without `datamask.secret` the context will not start**, and neither will it with one shorter than
+16 bytes. That is deliberate and it is the one decision in this library that is not negotiable — see
+the auto-configuration's README for why a default key, or a short secret stretched into an
+acceptable one, would be worse than a failed deployment. Both cases get a startup message naming
+what to set; neither repeats the value you configured.
+
+If `spring-boot-starter-actuator` is also on the classpath, `datamask.secret` is hidden from
+`/actuator/env` and `/actuator/configprops` even under `show-values: always`. Nothing to configure.
 
 ## What is in it
 

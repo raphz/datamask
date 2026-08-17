@@ -1,5 +1,6 @@
 package ch.raph.datamask.log4j2;
 
+import ch.raph.datamask.application.ResolvedMasker;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.config.plugins.Plugin;
 import org.apache.logging.log4j.core.pattern.ConverterKeys;
@@ -32,11 +33,11 @@ import org.apache.logging.log4j.core.pattern.PatternConverter;
 @ConverterKeys({"maskedMessage", "maskedMsg"})
 public final class MaskingMessagePatternConverter extends LogEventPatternConverter {
 
-    private final MaskerSource maskers;
+    private final ResolvedMasker<LogEventMasker> maskers;
 
     private MaskingMessagePatternConverter() {
         super("MaskedMessage", "message");
-        this.maskers = MaskerSource.forSecret(null);
+        this.maskers = LogEventMaskers.forSecret(null);
     }
 
     /**

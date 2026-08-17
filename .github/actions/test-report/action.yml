@@ -1,0 +1,16 @@
+name: Publish the test results
+description: >
+  Puts the JUnit results into the run summary — per-module totals, and the assertion message
+  of every failure. Used by every workflow that runs the tests, so a red run explains itself
+  in the browser instead of being an artifact somebody has to download and unzip.
+
+runs:
+  using: composite
+  steps:
+    # Deliberately no third-party action and no Checks API call. A run summary is visible
+    # without any token permission beyond the default, works identically for a pull request
+    # from a fork — where GITHUB_TOKEN is read-only and a check run simply fails to publish —
+    # and adds nothing to the set of things this repository has to trust.
+    - name: Summarise the test results
+      shell: bash
+      run: python3 .github/scripts/test-summary.py

@@ -1,4 +1,6 @@
-# A missing secret is the one configuration mistake this library refuses to work around, so it is
-# worth a startup message that says what to set rather than a bean-creation stack trace.
+# A secret this library will not work around — absent, or present but too short — is the first
+# configuration mistake most teams meet, so both halves of it are worth a startup message that says
+# what to set rather than a bean-creation stack trace.
 org.springframework.boot.diagnostics.FailureAnalyzer=\
-ch.raph.datamask.spring.MissingMaskSecretFailureAnalyzer
+ch.raph.datamask.spring.MissingMaskSecretFailureAnalyzer,\
+ch.raph.datamask.spring.ShortMaskSecretFailureAnalyzer

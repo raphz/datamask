@@ -59,8 +59,9 @@ covers a README.
 
 ## Java baseline
 
-`toolchain = 25` (build/test on the JDK the developer has) but `options.release = 21` — **21 is the
-published bytecode level**. Also set: `-parameters` (needed so the reflective plan compiler can
+`toolchain = 25` and `options.release = 25` — **25 is the published bytecode level** (raised from
+21 in August 2026; the library now uses Java 25 language and API features freely, including
+`javax.crypto.KDF`). Also set: `-parameters` (needed so the reflective plan compiler can
 recover constructor parameter names for non-record beans, and so Spring can bind
 `@ConfigurationProperties` constructors) and `-Xlint:all,-serial,-processing`.
 

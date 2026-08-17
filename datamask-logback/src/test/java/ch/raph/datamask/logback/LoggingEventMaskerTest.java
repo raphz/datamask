@@ -33,6 +33,9 @@ class LoggingEventMaskerTest {
     private static final String CARD = "4111111111111111";
     private static final String LOGGER = "ch.example.PaymentService";
 
+    /** The scheme and logger every path this module reports is built from. */
+    private static final String ORIGIN = "logback:" + LOGGER;
+
     private static final LoggerContext CONTEXT = context();
 
     /**
@@ -132,6 +135,66 @@ class LoggingEventMaskerTest {
             ILoggingEvent masked = masker.mask(event("rejected {} for {}", failure, "PMT-1"));
 
             assertThat(masked.getArgumentArray()[0]).isSameAs(failure);
+        }
+    }
+
+    @Nested
+    @DisplayName("Formatting the masked line")
+    class Formatting {
+
+        @Test
+        @DisplayName("renders a primitive array as its elements, the way logback's own formatting does")
+        void rendersPrimitiveArraysLikeLogback() {
+            ILoggingEvent masked = masker.mask(event("ids {} for {}", new int[] {1, 2, 3}, IBAN));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(logbackWouldRender("ids {} for {}", new int[] {1, 2, 3}, IBAN));
+        }
+
+        @Test
+        @DisplayName("renders nested arrays element by element, primitive and object alike")
+        void rendersNestedArraysLikeLogback() {
+            Object nested = new Object[] {new int[] {1, 2}, new String[] {"a", "b"}, new char[] {'x'}};
+
+            ILoggingEvent masked = masker.mask(event("batch {} for {}", nested, IBAN));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(logbackWouldRender("batch {} for {}", nested, IBAN));
+        }
+
+        @Test
+        @DisplayName("drops a trailing throwable argument from the rendering, as logback's own formatting does")
+        void dropsATrailingThrowableArgumentLikeLogback() {
+            // A trailing throwable that never became the event's proxy: logback fills the placeholders
+            // from the arguments before it and leaves the last one unfilled. Masking rewrites a
+            // throwable whose message carried a value into text, so which argument is a throwable has
+            // to be read off the original array or the placeholders shift.
+            ILoggingEvent masked = masker.mask(bare("rejected {} because {}", IBAN, new IllegalStateException("boom")));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(bare("rejected {} because {}", IBAN, new IllegalStateException("boom"))
+                            .getFormattedMessage()
+                            .replace(IBAN, MASKED_IBAN));
+        }
+
+        @Test
+        @DisplayName("terminates on an array that points back at itself, and discloses nothing of it")
+        void survivesASelfReferentialArray() {
+            Object[] recursive = new Object[2];
+            recursive[0] = IBAN;
+            recursive[1] = recursive;
+
+            ILoggingEvent masked = masker.mask(event("batch {}", (Object) recursive));
+
+            assertThat(masked.getFormattedMessage()).doesNotContain(IBAN);
+        }
+
+        /** The line logback itself would have produced for the same arguments, minus the masking. */
+        private static String logbackWouldRender(String message, Object... arguments) {
+            return event(message, arguments).getFormattedMessage().replace(IBAN, MASKED_IBAN);
         }
     }
 
@@ -318,7 +381,7 @@ class LoggingEventMaskerTest {
 
             observedBy(recorder).mask(event("payment from " + IBAN));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".message:IBAN");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/message:IBAN");
         }
 
         @Test
@@ -329,17 +392,174 @@ class LoggingEventMaskerTest {
 
             observedBy(recorder).mask(event("processing"));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".mdc.customer:EMAIL");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/mdc/customer:EMAIL");
         }
 
         @Test
-        @DisplayName("reports a declared argument field with its path and category, for the compliance record")
+        @DisplayName("reports a declared argument field under the site it was logged at, not its own type")
         void reportsDeclaredMasking() {
             Recorder recorder = new Recorder();
 
             observedBy(recorder).mask(event("customer {}", customer()));
 
-            assertThat(recorder.masked).contains("Customer.iban:IBAN:IBAN");
+            assertThat(recorder.masked).contains(ORIGIN + "/arg0.iban:IBAN:IBAN");
+        }
+
+        @Test
+        @DisplayName("numbers the argument, so a two-argument line says which one leaked")
+        void reportsTheArgumentPosition() {
+            Recorder recorder = new Recorder();
+
+            observedBy(recorder).mask(event("payment {} from {}", "PMT-1", IBAN));
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/arg1:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports a key-value pair under its key, which is what the fluent API named it")
+        void reportsKeyValuePairs() {
+            Recorder recorder = new Recorder();
+            LoggingEvent event = event("payment accepted");
+            event.addKeyValuePair(new KeyValuePair("account", IBAN));
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/kv/account:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports an exception message, and a cause one level further down the chain")
+        void reportsExceptionsAndTheirCauses() {
+            Recorder recorder = new Recorder();
+            Throwable cause = new IllegalStateException("Key (iban)=(" + IBAN + ") already exists");
+
+            observedBy(recorder).mask(eventWith(new RuntimeException("could not save " + EMAIL, cause), "insert"));
+
+            assertThat(recorder.undeclared).contains(ORIGIN + "/throwable:EMAIL", ORIGIN + "/throwable/cause:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports a suppressed exception under the container and its index")
+        void reportsSuppressedExceptions() {
+            Recorder recorder = new Recorder();
+            RuntimeException thrown = new RuntimeException("commit failed");
+            thrown.addSuppressed(new IllegalStateException("rollback of " + IBAN + " failed"));
+
+            observedBy(recorder).mask(eventWith(thrown, "transaction failed"));
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/throwable/suppressed/0:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports a marker payload under the field name the encoder will write it as")
+        void reportsMarkerPayloads() {
+            Recorder recorder = new Recorder();
+            LoggingEvent event = event("payment received");
+            event.addMarker(net.logstash.logback.marker.Markers.append("account", IBAN));
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/marker/account:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports a nested marker under the marker it hangs from, slash by slash")
+        void reportsNestedMarkerPayloads() {
+            Recorder recorder = new Recorder();
+            org.slf4j.Marker filtering = org.slf4j.MarkerFactory.getDetachedMarker("AUDIT");
+            filtering.add(net.logstash.logback.marker.Markers.append("account", IBAN));
+            LoggingEvent event = event("payment received");
+            event.addMarker(filtering);
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/marker/AUDIT/account:IBAN");
+        }
+
+        @Test
+        @DisplayName("prefixes every path it reports with the module's scheme, so a SIEM can tell sources apart")
+        void everyPathCarriesTheScheme() {
+            Recorder recorder = new Recorder();
+            MDC.put("customer", EMAIL);
+            LoggingEvent event = event("payment from " + IBAN + " for {}", customer());
+            event.addKeyValuePair(new KeyValuePair("account", IBAN));
+            event.addMarker(net.logstash.logback.marker.Markers.append("account", IBAN));
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.everything())
+                    .isNotEmpty()
+                    .allSatisfy(path -> assertThat(path).startsWith(ORIGIN + "/"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Limits")
+    class Limits {
+
+        @Test
+        @DisplayName("reports a cut suppressed list as a truncation, with the container's path and what it kept")
+        void reportsTruncationOfTheSuppressedList() {
+            Recorder recorder = new Recorder();
+            RuntimeException thrown = new RuntimeException("commit failed");
+            thrown.addSuppressed(new IllegalStateException("first " + IBAN));
+            thrown.addSuppressed(new IllegalStateException("second " + IBAN));
+            thrown.addSuppressed(new IllegalStateException("third " + IBAN));
+
+            ILoggingEvent masked = boundedTo(2, recorder).mask(eventWith(thrown, "transaction failed"));
+
+            assertThat(recorder.truncated).containsExactly(ORIGIN + "/throwable/suppressed:2");
+            assertThat(recorder.depthExceeded).isEmpty();
+            assertThat(masked.getThrowableProxy().getSuppressed()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("keeps the dropped tail out of the masked event entirely, rather than passing it through")
+        void dropsTheTailOfATruncatedSuppressedList() {
+            Recorder recorder = new Recorder();
+            RuntimeException thrown = new RuntimeException("commit failed");
+            thrown.addSuppressed(new IllegalStateException("first failure"));
+            thrown.addSuppressed(new IllegalStateException("rollback of " + IBAN + " failed"));
+
+            ILoggingEvent masked = boundedTo(1, recorder).mask(eventWith(thrown, "transaction failed"));
+
+            assertThat(masked.getThrowableProxy().getSuppressed()).hasSize(1);
+            assertThat(masked.getThrowableProxy().getSuppressed()[0].getMessage())
+                    .doesNotContain(IBAN);
+        }
+
+        @Test
+        @DisplayName("reports a marker graph that ran too deep as a depth limit, which is what it is")
+        void reportsMarkerDepthAsDepth() {
+            Recorder recorder = new Recorder();
+            org.slf4j.Marker outer = org.slf4j.MarkerFactory.getDetachedMarker("OUTER");
+            org.slf4j.Marker inner = org.slf4j.MarkerFactory.getDetachedMarker("INNER");
+            outer.add(inner);
+            inner.add(net.logstash.logback.marker.Markers.append("account", IBAN));
+            LoggingEvent event = event("payment received");
+            event.addMarker(outer);
+
+            ILoggingEvent masked = shallow(recorder).mask(event);
+
+            assertThat(recorder.depthExceeded).containsExactly(ORIGIN + "/marker/OUTER/INNER/account");
+            assertThat(recorder.truncated).isEmpty();
+            assertThat(encode(masked)).doesNotContain(IBAN);
+        }
+
+        private LoggingEventMasker boundedTo(int elements, MaskingObserver observer) {
+            return new LoggingEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .observer(observer)
+                    .policy(MaskingPolicy.strict().withMaxCollectionElements(elements))
+                    .build());
+        }
+
+        private LoggingEventMasker shallow(MaskingObserver observer) {
+            return new LoggingEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .observer(observer)
+                    .policy(MaskingPolicy.strict().withMaxDepth(1))
+                    .build());
         }
     }
 
@@ -393,17 +613,30 @@ class LoggingEventMaskerTest {
         @DisplayName("reports the failure to the observer, without the value in the path it reports")
         void reportsTheFailure() {
             Recorder recorder = new Recorder();
-            DataMask throwing = DataMask.builder()
-                    .secret(SECRET)
-                    .observer(recorder)
-                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
-                    .build();
 
-            new LoggingEventMasker(throwing).mask(event("checking {}", new Banking.Fragile(IBAN)));
+            throwingMasker(recorder).mask(event("checking {}", new Banking.Fragile(IBAN)));
 
             assertThat(recorder.failures)
                     .isNotEmpty()
-                    .allSatisfy(path -> assertThat(path).doesNotContain(IBAN));
+                    .allSatisfy(path -> assertThat(path).doesNotContain(IBAN).startsWith(ORIGIN + "/"));
+        }
+
+        @Test
+        @DisplayName("reports a withheld event against the event itself, not against a bare logger name")
+        void reportsTheWithheldEventUnderTheEventSite() {
+            Recorder recorder = new Recorder();
+
+            throwingMasker(recorder).mask(event("checking {}", new Banking.Fragile(IBAN)));
+
+            assertThat(recorder.failures).contains(ORIGIN + "/event");
+        }
+
+        private LoggingEventMasker throwingMasker(MaskingObserver observer) {
+            return new LoggingEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .observer(observer)
+                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                    .build());
         }
     }
 
@@ -462,6 +695,162 @@ class LoggingEventMaskerTest {
                 DataMask.builder().secret(SECRET).observer(observer).build());
     }
 
+    @Nested
+    @DisplayName("Markers")
+    class Markers {
+
+        @Test
+        @DisplayName("masks an object shipped on a logstash marker, which the encoder writes into the JSON")
+        void masksLogstashAppendedObject() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(net.logstash.logback.marker.Markers.append("customer", customer()));
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json)
+                    .doesNotContain(IBAN)
+                    .doesNotContain(EMAIL)
+                    .contains(MASKED_IBAN)
+                    .contains(MASKED_EMAIL);
+        }
+
+        @Test
+        @DisplayName("masks the entries of an appended map")
+        void masksLogstashAppendedEntries() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(
+                    net.logstash.logback.marker.Markers.appendEntries(java.util.Map.of("iban", IBAN, "country", "CH")));
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json).doesNotContain(IBAN).contains("CH");
+        }
+
+        @Test
+        @DisplayName("masks a logstash marker attached as a child of a filtering marker")
+        void masksNestedLogstashMarker() {
+            org.slf4j.Marker filtering = org.slf4j.MarkerFactory.getDetachedMarker("AUDIT");
+            filtering.add(net.logstash.logback.marker.Markers.append("customer", customer()));
+            LoggingEvent event = event("payment received");
+            event.addMarker(filtering);
+
+            String json = encode(masker.mask(event));
+
+            assertThat(json).doesNotContain(IBAN).doesNotContain(EMAIL).contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("leaves a plain filtering marker alone, so marker-based filters keep working")
+        void keepsPlainMarkers() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(org.slf4j.MarkerFactory.getMarker("AUDIT"));
+
+            ILoggingEvent masked = masker.mask(event);
+
+            assertThat(masked.getMarkerList()).isSameAs(event.getMarkerList());
+            assertThat(masked).isSameAs(event);
+        }
+
+        @Test
+        @DisplayName("returns the very same event when nothing, markers included, carried PII")
+        void keepsCleanEventsIntact() {
+            LoggingEvent event = event("payment received");
+
+            assertThat(masker.mask(event)).isSameAs(event);
+        }
+
+        @Test
+        @DisplayName("strips the payload of a marker type it cannot inspect rather than forwarding it")
+        void stripsUnknownMarkerTypes() {
+            LoggingEvent event = event("payment received");
+            event.addMarker(new LeakyMarker("AUDIT", IBAN));
+
+            ILoggingEvent masked = masker.mask(event);
+
+            assertThat(masked.getMarkerList()).hasSize(1);
+            assertThat(masked.getMarkerList().getFirst().getName()).isEqualTo("AUDIT");
+            assertThat(encode(masked)).doesNotContain(IBAN);
+        }
+
+        @Test
+        @DisplayName("redacts a marker whose payload masking failed, instead of passing it through")
+        void redactsMarkersThatFailToMask() {
+            Recorder recorder = new Recorder();
+            LoggingEventMasker throwing = new LoggingEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                    .observer(recorder)
+                    .build());
+            LoggingEvent event = event("payment received");
+            event.addMarker(net.logstash.logback.marker.Markers.append("secret", new Banking.Fragile(IBAN)));
+
+            String json = encode(throwing.mask(event));
+
+            assertThat(json).doesNotContain(IBAN);
+            assertThat(recorder.failures).isNotEmpty();
+        }
+
+        /** A marker type from outside this module whose payload only surfaces through toString(). */
+        private record LeakyMarker(String name, String payload) implements org.slf4j.Marker {
+
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String toString() {
+                return name + "=" + payload;
+            }
+
+            @Override
+            public void add(org.slf4j.Marker reference) {}
+
+            @Override
+            public boolean remove(org.slf4j.Marker reference) {
+                return false;
+            }
+
+            @Override
+            public boolean hasReferences() {
+                return false;
+            }
+
+            @Override
+            @Deprecated
+            public boolean hasChildren() {
+                return false;
+            }
+
+            @Override
+            public java.util.Iterator<org.slf4j.Marker> iterator() {
+                return java.util.Collections.emptyIterator();
+            }
+
+            @Override
+            public boolean contains(org.slf4j.Marker other) {
+                return false;
+            }
+
+            @Override
+            public boolean contains(String otherName) {
+                return false;
+            }
+        }
+    }
+
+    /** What a JSON stack actually ships, which is where a marker payload would surface. */
+    private static String encode(ILoggingEvent event) {
+        net.logstash.logback.encoder.LogstashEncoder encoder = new net.logstash.logback.encoder.LogstashEncoder();
+        encoder.setContext(CONTEXT);
+        encoder.start();
+        try {
+            return new String(encoder.encode(event), java.nio.charset.StandardCharsets.UTF_8);
+        } finally {
+            encoder.stop();
+        }
+    }
+
     private static Banking.Customer customer() {
         return new Banking.Customer(new Banking.Email(EMAIL), IBAN, "CH");
     }
@@ -476,6 +865,20 @@ class LoggingEventMaskerTest {
                 arguments.length == 0 ? null : arguments);
     }
 
+    /**
+     * An event assembled field by field rather than through the constructor, which is what leaves a
+     * throwable in the argument array without a proxy of its own.
+     */
+    private static LoggingEvent bare(String message, Object... arguments) {
+        LoggingEvent event = new LoggingEvent();
+        event.setLoggerName(LOGGER);
+        event.setLevel(Level.INFO);
+        event.setMessage(message);
+        event.setArgumentArray(arguments);
+        event.setMDCPropertyMap(java.util.Map.of());
+        return event;
+    }
+
     private static LoggingEvent eventWith(Throwable thrown, String message) {
         return new LoggingEvent(
                 LoggingEventMaskerTest.class.getName(), CONTEXT.getLogger(LOGGER), Level.INFO, message, thrown, null);
@@ -485,21 +888,52 @@ class LoggingEventMaskerTest {
 
         private final List<String> masked = new ArrayList<>();
         private final List<String> undeclared = new ArrayList<>();
+        private final List<String> scanned = new ArrayList<>();
         private final List<String> failures = new ArrayList<>();
+        private final List<String> depthExceeded = new ArrayList<>();
+        private final List<String> truncated = new ArrayList<>();
+
+        /** Every path this observer was handed, whatever the signal, for a grammar-wide assertion. */
+        private final List<String> paths = new ArrayList<>();
+
+        List<String> everything() {
+            return paths;
+        }
 
         @Override
         public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
+            paths.add(path);
             masked.add(path + ":" + category + ":" + strategy);
         }
 
         @Override
         public void onUnannotatedPii(String path, PiiCategory category, String detector) {
+            paths.add(path);
             undeclared.add(path + ":" + category);
         }
 
         @Override
+        public void onScanned(String path, PiiCategory category, String detector) {
+            paths.add(path);
+            scanned.add(path + ":" + category);
+        }
+
+        @Override
         public void onFailure(String path, Throwable error) {
+            paths.add(path);
             failures.add(path);
+        }
+
+        @Override
+        public void onDepthLimitExceeded(String path) {
+            paths.add(path);
+            depthExceeded.add(path);
+        }
+
+        @Override
+        public void onCollectionTruncated(String path, int kept) {
+            paths.add(path);
+            truncated.add(path + ":" + kept);
         }
     }
 }

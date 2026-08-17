@@ -26,27 +26,36 @@ public final class DateGeneralizeMasker implements Masker {
 
     @Override
     public Object mask(Object value, MaskContext context) {
+        // A card expiry is a never-partially-revealed category, and its year is most of the value.
+        if (context.category().neverPartiallyReveal()) {
+            return Masks.placeholder(context);
+        }
         return switch (value) {
             case LocalDate date -> LocalDate.of(date.getYear(), 1, 1);
             case LocalDateTime dateTime -> LocalDateTime.of(dateTime.getYear(), 1, 1, 0, 0);
             case YearMonth yearMonth -> YearMonth.of(yearMonth.getYear(), 1);
             case OffsetDateTime offset -> OffsetDateTime.of(offset.getYear(), 1, 1, 0, 0, 0, 0, offset.getOffset());
             case ZonedDateTime zoned -> ZonedDateTime.of(zoned.getYear(), 1, 1, 0, 0, 0, 0, zoned.getZone());
-            case Instant instant ->
-                instant.atZone(ZoneOffset.UTC)
-                        .withDayOfYear(1)
-                        .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
-                        .toInstant();
-            case java.util.Date legacy ->
-                java.util.Date.from(legacy.toInstant()
-                        .atZone(ZoneOffset.UTC)
-                        .withDayOfYear(1)
-                        .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
-                        .toInstant());
+            case Instant instant -> startOfYear(instant);
+            // The three java.sql types come before java.util.Date, which two of them extend. It is
+            // not a refinement: java.sql.Date and java.sql.Time throw from toInstant() by contract,
+            // and java.sql.Date is the single most common type a legacy schema gives a birth date.
+            case java.sql.Date sqlDate ->
+                java.sql.Date.valueOf(sqlDate.toLocalDate().withDayOfYear(1));
+            case java.sql.Time sqlTime -> java.sql.Time.valueOf(java.time.LocalTime.MIDNIGHT);
+            case java.sql.Timestamp timestamp -> java.sql.Timestamp.from(startOfYear(timestamp.toInstant()));
+            case java.util.Date legacy -> java.util.Date.from(startOfYear(legacy.toInstant()));
             case CharSequence text -> generalizeText(text.toString(), context);
             case Temporal ignored -> Masks.placeholder(context);
             default -> Masks.placeholder(context);
         };
+    }
+
+    private static Instant startOfYear(Instant instant) {
+        return instant.atZone(ZoneOffset.UTC)
+                .withDayOfYear(1)
+                .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
+                .toInstant();
     }
 
     private Object generalizeText(String text, MaskContext context) {
@@ -59,11 +68,16 @@ public final class DateGeneralizeMasker implements Masker {
         }
     }
 
+    /**
+     * The engine asks about the value's runtime class, so a member declared {@code Object} holding a
+     * {@code LocalDate} is answered on the {@code LocalDate}. There is deliberately no clause
+     * admitting {@code Object} itself: something that is genuinely neither a temporal nor text has
+     * no year to generalise to, and being sent to redaction instead is the fail-closed outcome.
+     */
     @Override
     public boolean supports(Class<?> type) {
         return Temporal.class.isAssignableFrom(type)
                 || java.util.Date.class.isAssignableFrom(type)
-                || CharSequence.class.isAssignableFrom(type)
-                || Object.class.equals(type);
+                || CharSequence.class.isAssignableFrom(type);
     }
 }

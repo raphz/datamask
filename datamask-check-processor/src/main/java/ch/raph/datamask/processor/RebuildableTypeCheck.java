@@ -26,6 +26,11 @@ import javax.lang.model.util.Types;
  * attempt to mask an instance throws a {@code MaskingException}, and the diagnostic here names the
  * constructor that would have prevented it.
  *
+ * <p>"Followed by field writes" is meant literally: the runtime writes each field with
+ * {@code Lookup.unreflectSetter}, which refuses a final field. A class with a no-argument
+ * constructor and final fields therefore reads as rebuildable and is not, which is why the two are
+ * decided together here.
+ *
  * <p>The check is deliberately local: it fires on a class that declares {@code @PII} itself, and
  * never tries to work out whether some type nested three levels down carries PII. Declared types
  * lie — {@code Object}, an interface, a subclass — and a guess in either direction would be worse
@@ -77,40 +82,104 @@ final class RebuildableTypeCheck {
             return;
         }
         List<ExecutableElement> constructors = ElementFilter.constructorsIn(type.getEnclosedElements());
-        if (constructors.isEmpty() || constructors.stream().anyMatch(constructor -> isUsable(constructor, fields))) {
+        if (constructors.stream().anyMatch(constructor -> matchesTheFields(constructor, fields))) {
             return;
         }
 
+        // No declared constructor at all means the implicit no-argument one, which the engine reaches
+        // exactly as it reaches a declared one.
+        boolean noArguments = constructors.isEmpty()
+                || constructors.stream()
+                        .anyMatch(constructor -> constructor.getParameters().isEmpty());
+        List<VariableElement> unwritable = finalFields(fields);
+        if (noArguments && unwritable.isEmpty()) {
+            return;
+        }
+
+        String allArguments = "a constructor " + type.getSimpleName() + "(" + signature(fields) + ") matching the "
+                + "field order (" + names(fields) + ")";
+        if (noArguments) {
+            reporter.error(
+                    type,
+                    type.getQualifiedName() + " holds @PII but cannot be rebuilt once its values are masked: "
+                            + "the engine follows a no-argument constructor with a write per field, and "
+                            + names(unwritable) + (unwritable.size() == 1 ? " is final" : " are final")
+                            + ", which a field write cannot set. Add " + allArguments
+                            + ", make it a record, or drop the final.");
+            return;
+        }
         reporter.error(
                 type,
                 type.getQualifiedName() + " holds @PII but cannot be rebuilt once its values are masked: "
-                        + "it has no no-argument constructor and no constructor "
-                        + type.getSimpleName() + "(" + signature(fields) + ") matching the field order ("
-                        + names(fields) + "). Add one of the two, make it a record, or mask it at "
+                        + "it has no no-argument constructor and no " + allArguments
+                        + ". Add one of the two, make it a record, or mask it at "
                         + "serialisation time with datamask-jackson.");
     }
 
     /**
-     * A constructor the engine can rebuild through: the no-argument one, or one whose parameters are
-     * exactly the instance fields in order. Visibility is not part of it — the engine looks the type
-     * up with a private lookup, which reaches a private constructor on the class path.
+     * Whether the engine can rebuild through this constructor, which is only ever true of the
+     * all-arguments shape — the no-argument one is decided separately, because it also needs every
+     * field to be writable afterwards.
+     *
+     * <p>Two matchings, because {@code ReflectiveMaskPlanCompiler.fieldOrderFor} accepts two. In
+     * declaration order the parameter types alone are enough. Out of order, the runtime matches by
+     * name using {@code -parameters} or {@code @ConstructorProperties} and permutes the values, so
+     * a constructor whose parameters name the fields counts as well — reporting one of those would
+     * fail a build over code that masks perfectly.
+     *
+     * <p>Visibility is not part of it: the engine looks the type up with a private lookup, which
+     * reaches a private constructor on the class path.
      */
-    private boolean isUsable(ExecutableElement constructor, List<VariableElement> fields) {
+    private boolean matchesTheFields(ExecutableElement constructor, List<VariableElement> fields) {
         List<? extends VariableElement> parameters = constructor.getParameters();
-        if (parameters.isEmpty()) {
-            return true;
-        }
-        if (parameters.size() != fields.size()) {
+        if (parameters.isEmpty() || parameters.size() != fields.size()) {
             return false;
         }
+        return matchesInOrder(parameters, fields) || matchesByName(parameters, fields);
+    }
+
+    private boolean matchesInOrder(List<? extends VariableElement> parameters, List<VariableElement> fields) {
         for (int i = 0; i < fields.size(); i++) {
-            if (!types.isSameType(
-                    types.erasure(parameters.get(i).asType()),
-                    types.erasure(fields.get(i).asType()))) {
+            if (!isSameErasure(parameters.get(i), fields.get(i))) {
                 return false;
             }
         }
         return true;
+    }
+
+    private boolean matchesByName(List<? extends VariableElement> parameters, List<VariableElement> fields) {
+        for (VariableElement parameter : parameters) {
+            boolean matched = fields.stream()
+                    .anyMatch(field -> field.getSimpleName().contentEquals(parameter.getSimpleName())
+                            && isSameErasure(parameter, field));
+            if (!matched) {
+                return false;
+            }
+        }
+        return parameters.stream()
+                        .map(parameter -> parameter.getSimpleName().toString())
+                        .distinct()
+                        .count()
+                == parameters.size();
+    }
+
+    private boolean isSameErasure(VariableElement parameter, VariableElement field) {
+        return types.isSameType(types.erasure(parameter.asType()), types.erasure(field.asType()));
+    }
+
+    /**
+     * The fields a no-argument constructor could not be followed by a write to.
+     *
+     * <p>The runtime writes them with {@code Lookup.unreflectSetter}, which refuses a final field
+     * outright — a private lookup does not help, and neither does a setter, because a setter cannot
+     * assign one either. So a class whose only constructor takes no arguments and whose fields are
+     * final is unrebuildable, however ordinary it looks, and every instance of it fails on the first
+     * mask.
+     */
+    private static List<VariableElement> finalFields(List<VariableElement> fields) {
+        return fields.stream()
+                .filter(field -> field.getModifiers().contains(Modifier.FINAL))
+                .toList();
     }
 
     /** Instance fields in the order the runtime reads them: this class first, then up the hierarchy. */

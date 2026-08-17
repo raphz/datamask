@@ -37,6 +37,38 @@ datamask:
 Setting both is a profile that inherited both. The secret wins and the disagreement is logged: between
 two configured answers, the stronger one is the safe one.
 
+A secret that is *present but shorter than 16 bytes* refuses to start for the same reason, and gets a
+startup message of its own rather than an `IllegalArgumentException` out of the crypto adapter. It is
+at least as common as the missing one — a team setting the property for the first time reaches for a
+value they can type — and stretching a short secret into an acceptable one would be the same mistake
+as shipping a default key. Neither that message nor any log line repeats the configured value, its
+length, or any part of it.
+
+## The secret is kept out of Actuator
+
+`/actuator/env` and `/actuator/configprops` hide values by default. They do not under
+`management.endpoint.env.show-values: always`, which internal deployments set routinely — and at that
+point the only thing between a property and the response body is a `SanitizingFunction` that claims
+the key. This module contributes one, when the Actuator is on the classpath:
+
+```yaml
+management:
+  endpoint:
+    env:
+      show-values: always     # datamask.secret is still ******
+```
+
+The match is a shape rather than a property name. Relaxed binding means the same secret is
+`datamask.secret` in `configprops` and whatever spelling the property source used in `env` —
+`DATAMASK_SECRET`, `datamask-secret` — and it covers key material this library has not shipped yet,
+because a rule listing one name fails silently the day a second one exists. `datamask.ephemeral-key`
+is the one exclusion: it ends in `key` but holds a boolean, and whether a deployment is running under
+a random per-JVM key is exactly what an operator opens `/env` to find out.
+
+The function is registered whether or not `datamask.enabled` is set, because turning masking off
+removes the `DataMask` bean and not the secret sitting in the environment. Applications without the
+Actuator get nothing and notice nothing.
+
 ## Properties
 
 | Property | Default | |
@@ -50,12 +82,15 @@ two configured answers, the stronger one is the safe one.
 | `datamask.policy.redaction-placeholder` | preset | What a redacted value becomes. |
 | `datamask.policy.max-depth` | preset | Traversal bound. |
 | `datamask.policy.max-collection-elements` | preset | Collection bound; the tail is dropped. |
+| `datamask.policy.max-text-length` | preset (8192) | How many characters of a string are scanned; the rest is redacted unread. |
 | `datamask.policy.scan-unannotated-text` | preset | Whether free text is scanned for PII nobody declared. |
 | `datamask.policy.mask-map-keys` | preset | Masking a key changes lookup semantics, so this is separate. |
 | `datamask.jackson.enabled` | `true` | |
 | `datamask.logback.enabled` | `true` | |
 | `datamask.log4j2.enabled` | `true` | |
 | `datamask.jdbc.enabled` | `true` | |
+| `datamask.jdbc.excluded-beans` | — | Names of `DataSource` beans to leave unwrapped. Each one is logged at startup. |
+| `datamask.jdbc.wrap-result-sets` | `true` | Off, an error surfacing during a fetch reaches the application as the driver threw it. Measured at ~5 ns per forwarded call, so leave it on unless your own read path says otherwise. |
 | `datamask.kafka.enabled` | `true` | |
 | `datamask.metrics.enabled` | `true` | Needs a Micrometer `MeterRegistry` in the context. |
 
@@ -108,6 +143,36 @@ set, without this module knowing which auto-configuration produced it. `unwrap` 
 driver's own objects, so pool metrics, health indicators and code reaching for `PGConnection` keep
 working. A `SqlExceptionSanitizer` bean is offered as well, for an exception that reached a
 `@ControllerAdvice` rather than the driver.
+
+The processor is `Ordered.LOWEST_PRECEDENCE`, so a pool decorator or a tracing proxy has already had
+its say and the masking ends up **outermost** — an error from anything underneath still passes
+through the sanitiser on its way out. One limit is Spring's and not this module's: a post-processor
+that declares no order at all is registered after every ordered one, so it would still wrap this.
+Declare `Ordered` on a decorator that needs to sit outside — and note that Spring buckets a
+post-processor by the type its bean definition advertises, so a `@Bean` method returning
+`BeanPostProcessor` hides the `Ordered` and lands in the unordered group.
+
+**What wrapping breaks, and the way out.** The bean is a `MaskingDataSource` once wrapped, so an
+injection point declared as the pool's own type stops resolving:
+
+```java
+@Autowired HikariDataSource pool;                              // NoSuchBeanDefinitionException
+@Autowired DataSource ds; ds.unwrap(HikariDataSource.class);   // works, and keeps the masking
+```
+
+Prefer the second — it is what Boot's own pool metadata and health indicators do, which is why they
+keep working. When a third party genuinely needs the bean to *be* the pool and cannot be changed,
+name it:
+
+```yaml
+datamask:
+  jdbc:
+    excluded-beans: legacyReportingDataSource
+```
+
+That pool is then unmasked: its unique-constraint violations quote the rows they collided with again.
+It is the last resort rather than the first, and every exclusion is logged at `WARN` at startup so
+the decision is visible in the log of the environment it was made in.
 
 **Logback, Log4j2, Kafka.** These three cannot be handed anything when they are built: `logback.xml`
 is read before there is a container, and a Kafka producer instantiates its serializers from class

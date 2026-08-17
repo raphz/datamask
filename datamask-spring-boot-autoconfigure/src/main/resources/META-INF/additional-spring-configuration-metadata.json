@@ -1,0 +1,39 @@
+{
+  "properties": [
+    {
+      "name": "datamask.jackson.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "sourceType": "ch.raph.datamask.spring.DataMaskProperties$Integration",
+      "description": "Whether DataMask registers its Jackson module. Off, every document the application serialises through an ObjectMapper carries its @PII fields in the clear: REST responses, event payloads, anything written as JSON. Nothing else changes, and no other integration is affected."
+    },
+    {
+      "name": "datamask.logback.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "sourceType": "ch.raph.datamask.spring.DataMaskProperties$Integration",
+      "description": "Whether this application's DataMask is handed to Logback. Off does not stop a MaskingAppender declared in logback.xml from masking — logging starts before there are beans, so an appender with nothing installed falls back to strict masking under an ephemeral key. What it costs is the key: log pseudonyms then differ after every restart and stop matching the ones written anywhere else."
+    },
+    {
+      "name": "datamask.log4j2.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "sourceType": "ch.raph.datamask.spring.DataMaskProperties$Integration",
+      "description": "Whether this application's DataMask is handed to Log4j2. Same trade as datamask.logback.enabled: a rewrite policy or pattern converter declared in log4j2.xml keeps masking, but under an ephemeral key, so its pseudonyms no longer correlate with those written by the rest of the application or by other instances."
+    },
+    {
+      "name": "datamask.kafka.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "sourceType": "ch.raph.datamask.spring.DataMaskProperties$Integration",
+      "description": "Whether this application's DataMask is handed to the Kafka plugins. A client builds serializers and interceptors from class names, so they cannot be given an engine and look one up per record instead; off, they keep masking under strict defaults and an ephemeral key, and a HASH pseudonym on a topic stops matching the same value seen anywhere else. Plugins the application constructs itself already carry their own engine and are unaffected."
+    },
+    {
+      "name": "datamask.metrics.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "sourceType": "ch.raph.datamask.spring.DataMaskProperties$Integration",
+      "description": "Whether the Micrometer observer is registered, when the application has a MeterRegistry. Masking is unaffected; what stops is the telemetry, and with it datamask.unannotated — the counter that fires when a detector finds PII no annotation declared, which is the earliest warning that a newly added field is leaking. Also off whenever datamask.enabled is false."
+    }
+  ]
+}

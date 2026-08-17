@@ -13,5 +13,11 @@
  * {@code LeafTypes} is the compile-time twin of the runtime's type classification and is the one
  * place where a divergence from the reflective compiler could hide — which is what
  * {@code PlanEquivalenceTest} exists to catch.
+ *
+ * <p>The package is {@code @NullMarked}: every type in every signature here is non-null unless it
+ * is annotated {@code @Nullable}.
  */
+@NullMarked
 package ch.raph.datamask.processor.plan;
+
+import org.jspecify.annotations.NullMarked;

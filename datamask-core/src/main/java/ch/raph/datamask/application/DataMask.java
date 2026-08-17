@@ -2,8 +2,10 @@ package ch.raph.datamask.application;
 
 import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.Masker;
+import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.domain.MaskingPolicy;
+import ch.raph.datamask.domain.PiiDescriptor;
 import ch.raph.datamask.domain.PiiDetector;
 import ch.raph.datamask.domain.PiiFinding;
 import ch.raph.datamask.domain.PolicyOverrides;
@@ -13,11 +15,13 @@ import ch.raph.datamask.infrastructure.crypto.HmacPseudonymizer;
 import ch.raph.datamask.infrastructure.crypto.MaskKey;
 import ch.raph.datamask.infrastructure.detect.Detectors;
 import ch.raph.datamask.infrastructure.generated.GeneratedMaskPlanCompiler;
-import ch.raph.datamask.infrastructure.vault.InMemoryTokenVault;
+import ch.raph.datamask.infrastructure.vault.RejectingTokenVault;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The entry point.
@@ -62,23 +66,60 @@ public final class DataMask {
      * constructor, and for collections and maps of those.
      */
     @SuppressWarnings("unchecked")
-    public <T> T mask(T value) {
+    public <T> @Nullable T mask(@Nullable T value) {
         return (T) engine.mask(value);
     }
 
-    /** Masks the PII inside a string and leaves the surrounding text readable. */
-    public String maskText(CharSequence text) {
-        return engine.maskText(text, "text");
+    /**
+     * Masks one value against a category the caller already knows, without needing an annotated
+     * type to hang it on — a header, a query parameter, a value pulled out of a map.
+     *
+     * <p>The category decides the strategy, exactly as {@code @PII(category = …)} on a field would.
+     */
+    public @Nullable Object maskValue(@Nullable Object value, PiiCategory category) {
+        return maskValue(value, category, "value");
     }
 
-    /** Reports the PII in a string without changing it — for auditing what a payload contains. */
-    public List<PiiFinding> scan(CharSequence text) {
+    /**
+     * The same, with the path that reaches {@link MaskingObserver}. Worth passing: the observer
+     * signal is only actionable if it says which value it was about.
+     */
+    public @Nullable Object maskValue(@Nullable Object value, PiiCategory category, String path) {
+        Objects.requireNonNull(category, "category");
+        Class<?> declaredType = value == null ? Object.class : value.getClass();
+        return engine.maskDeclared(value, PiiDescriptor.of(category), declaredType, path);
+    }
+
+    /** Masks the PII inside a string and leaves the surrounding text readable. Null in, null out. */
+    public @Nullable String maskText(@Nullable CharSequence text) {
+        return maskText(text, "text");
+    }
+
+    /** The same, with the path reported to {@link MaskingObserver#onUnannotatedPii}. */
+    public @Nullable String maskText(@Nullable CharSequence text, String path) {
+        return engine.maskText(text, path);
+    }
+
+    /**
+     * Reports the PII in a string without changing it — for auditing what a payload contains.
+     * Null or empty text has no findings.
+     */
+    public List<PiiFinding> scan(@Nullable CharSequence text) {
         return engine.sanitizer().scan(text);
     }
 
     /** The keyed surrogate for a value, matching what {@link MaskStrategy#HASH} would produce. */
     public String pseudonymize(String value) {
         return pseudonymizer.pseudonymize(value);
+    }
+
+    /**
+     * Whether a pseudonym stands for this value — including one issued under a key this deployment
+     * has since rotated away from, which is what makes a rotation something other than a break in
+     * every join. Recomputes rather than reverses; a surrogate stays one-way.
+     */
+    public boolean pseudonymMatches(String value, String pseudonym) {
+        return pseudonymizer instanceof HmacPseudonymizer hmac && hmac.matches(value, pseudonym);
     }
 
     /** Resolves a token issued by {@link MaskStrategy#TOKENIZE}. */
@@ -102,14 +143,17 @@ public final class DataMask {
     public static final class Builder {
 
         private MaskKey key;
+        private final List<MaskKey> previousKeys = new ArrayList<>();
         private MaskingPolicy policy = MaskingPolicy.strict();
         private TokenVault vault;
         private MaskingObserver observer = MaskingObserver.NOOP;
         private PolicyOverrides overrides = PolicyOverrides.none();
         private MaskPlanCompiler compiler;
         private List<PiiDetector> detectors;
-        private final List<Runnable> maskerRegistrations = new ArrayList<>();
-        private final MaskerRegistry maskers = MaskerRegistry.withDefaults();
+        // Recorded rather than applied, so each build() can replay them onto a registry of its own.
+        // A registry shared across builds would let a masker registered after one build() change
+        // how an already-created DataMask masks — action at a distance, in a security library.
+        private final List<Consumer<MaskerRegistry>> maskerRegistrations = new ArrayList<>();
 
         private Builder() {}
 
@@ -119,9 +163,36 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * The same, from a {@code char[]} — worth preferring, because a {@code String} secret cannot
+         * be wiped and stays readable in any heap dump taken before it is collected.
+         */
+        public Builder secret(char[] secret) {
+            this.key = MaskKey.ofSecret(secret);
+            return this;
+        }
+
         public Builder key(MaskKey key) {
             this.key = Objects.requireNonNull(key, "key");
             return this;
+        }
+
+        /**
+         * A key this deployment has rotated away from. Repeatable.
+         *
+         * <p>Pseudonyms carry the id of the key that issued them, so one issued before a rotation
+         * can still be confirmed against the value it stands for — see
+         * {@link #pseudonymMatches(String, String)}. Keep a previous key for as long as data
+         * pseudonymised under it is still being joined, and no longer.
+         */
+        public Builder previousKey(MaskKey previous) {
+            previousKeys.add(Objects.requireNonNull(previous, "previous"));
+            return this;
+        }
+
+        /** A secret this deployment has rotated away from, derived the same way {@link #secret(String)} is. */
+        public Builder previousSecret(String previous) {
+            return previousKey(MaskKey.ofSecret(previous));
         }
 
         public Builder policy(MaskingPolicy policy) {
@@ -129,6 +200,10 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * The vault behind {@link MaskStrategy#TOKENIZE}. Without one, tokenisation refuses and the
+         * value is redacted instead — see {@link RejectingTokenVault} for why that is the default.
+         */
         public Builder vault(TokenVault vault) {
             this.vault = vault;
             return this;
@@ -163,35 +238,55 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * Adds a detector after the built-in ones, so it only classifies text no built-in claimed.
+         *
+         * <p>Order is priority: overlapping findings are resolved earliest-start, then longest, then
+         * by position in this list. Use {@link #detectorFirst} when the point of the detector is
+         * that it knows better than a built-in.
+         */
         public Builder detector(PiiDetector detector) {
-            if (this.detectors == null) {
-                this.detectors = new ArrayList<>(Detectors.defaults());
-            } else {
-                this.detectors = new ArrayList<>(this.detectors);
-            }
-            this.detectors.add(detector);
+            mutableDetectors().add(Objects.requireNonNull(detector, "detector"));
             return this;
+        }
+
+        /**
+         * Adds a detector ahead of the built-in ones, so it wins any tie against them.
+         *
+         * <p>This is what an institution-specific format needs. A contract reference that happens to
+         * pass Luhn would otherwise be reported and masked as a payment card for as long as the
+         * built-in detector is consulted first, and appending could never change that.
+         */
+        public Builder detectorFirst(PiiDetector detector) {
+            mutableDetectors().addFirst(Objects.requireNonNull(detector, "detector"));
+            return this;
+        }
+
+        private List<PiiDetector> mutableDetectors() {
+            detectors = new ArrayList<>(detectors != null ? detectors : Detectors.defaults());
+            return detectors;
         }
 
         /** Replaces a built-in strategy, for an institution-specific account or reference format. */
         public Builder masker(MaskStrategy strategy, Masker masker) {
-            maskerRegistrations.add(() -> maskers.register(strategy, masker));
+            maskerRegistrations.add(registry -> registry.register(strategy, masker));
             return this;
         }
 
         /** Registers a custom masker instance, for implementations without a no-argument constructor. */
         public Builder masker(Masker masker) {
-            maskerRegistrations.add(() -> maskers.register(masker));
+            maskerRegistrations.add(registry -> registry.register(masker));
             return this;
         }
 
         public DataMask build() {
             MaskKey resolvedKey = key != null ? key : MaskKey.ephemeral();
-            TokenVault resolvedVault = vault != null ? vault : new InMemoryTokenVault();
-            Pseudonymizer pseudonymizer = new HmacPseudonymizer(resolvedKey);
+            TokenVault resolvedVault = vault != null ? vault : RejectingTokenVault.INSTANCE;
+            Pseudonymizer pseudonymizer = new HmacPseudonymizer(resolvedKey, previousKeys);
             List<PiiDetector> resolvedDetectors = detectors != null ? detectors : Detectors.defaults();
 
-            maskerRegistrations.forEach(Runnable::run);
+            MaskerRegistry maskers = MaskerRegistry.withDefaults();
+            maskerRegistrations.forEach(registration -> registration.accept(maskers));
 
             MaskingPolicy effectivePolicy = policy;
             MaskContextFactory contexts = (descriptor, strategy, path, declaredType) -> new DefaultMaskContext(
@@ -200,7 +295,8 @@ public final class DataMask {
             MaskPlanCompiler resolvedCompiler =
                     compiler != null ? compiler : GeneratedMaskPlanCompiler.orReflective(overrides);
 
-            TextSanitizer sanitizer = new TextSanitizer(resolvedDetectors, maskers, contexts, observer);
+            TextSanitizer sanitizer =
+                    new TextSanitizer(resolvedDetectors, maskers, contexts, observer, effectivePolicy);
             MaskingEngine engine =
                     new MaskingEngine(resolvedCompiler, maskers, effectivePolicy, sanitizer, contexts, observer);
 

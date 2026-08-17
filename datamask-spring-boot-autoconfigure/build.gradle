@@ -4,6 +4,10 @@ plugins {
 
 description = 'Spring Boot 4.1 auto-configuration for DataMask and every integration on the classpath.'
 
+// The derived name would be ch.raph.datamask.spring.boot.autoconfigure; the module ships
+// ch.raph.datamask.spring.
+automaticModuleName = 'ch.raph.datamask.spring'
+
 dependencies {
     api project(':datamask-core')
     api libs.spring.boot.autoconfigure
@@ -19,6 +23,9 @@ dependencies {
     compileOnly project(':datamask-jdbc')
     compileOnly project(':datamask-kafka')
     compileOnly libs.micrometer.core
+    // Actuator is optional in the same way: without it there is no /env and no /configprops, and
+    // nothing to keep datamask.secret out of.
+    compileOnly libs.spring.boot.actuator
 
     annotationProcessor libs.spring.boot.configuration.processor
 
@@ -28,5 +35,17 @@ dependencies {
     testImplementation project(':datamask-jdbc')
     testImplementation project(':datamask-kafka')
     testImplementation libs.micrometer.core
+    testImplementation libs.spring.boot.actuator
     testImplementation libs.spring.boot.test
+    // Boot's real metrics auto-configuration chain, so the ordering test runs the same
+    // condition-evaluation sequence a Boot application does.
+    testImplementation libs.spring.boot.micrometer.metrics
+}
+
+// spring-boot-configuration-processor merges src/main/resources/META-INF/additional-spring-configuration-metadata.json
+// over what it generates, and it finds that file through build/resources/main — so it has to have been
+// processed before compileJava runs the processor, which Gradle does not order on its own. Without this
+// the per-integration descriptions are there or not depending on task order.
+tasks.named('compileJava') {
+    inputs.files(tasks.named('processResources'))
 }

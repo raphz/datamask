@@ -20,6 +20,6 @@ public enum Sensitivity {
     CRITICAL;
 
     public boolean atLeast(Sensitivity threshold) {
-        return ordinal() >= threshold.ordinal();
+        return compareTo(threshold) >= 0;
     }
 }

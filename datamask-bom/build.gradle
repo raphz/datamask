@@ -5,12 +5,15 @@ plugins {
 
 description = 'Bill of materials pinning every DataMask module to a single, consistent version.'
 
-dependencies {
-    constraints {
-        // The BOM pins what an application can depend on. datamask-architecture-tests is not
-        // published, so pinning it would advertise a coordinate that does not exist on Central.
-        rootProject.subprojects
-                .findAll { it.name != 'datamask-bom' && it.name != 'datamask-architecture-tests' }
-                .each { api "${it.group}:${it.name}:${it.version}" }
-    }
-}
+// The BOM pins what an application can depend on: exactly the modules that publish. Deriving the
+// list from the publishing convention (rather than a name list) means an unpublished module —
+// datamask-architecture-tests, or a scaffold that has no code yet — can never be advertised as a
+// coordinate that does not exist on Central. plugins.withId fires whenever the sibling applies the
+// convention, regardless of project evaluation order.
+rootProject.subprojects
+        .findAll { it.name != 'datamask-bom' }
+        .each { sub ->
+            sub.plugins.withId('datamask.publishing-conventions') {
+                project.dependencies.constraints.add('api', "${sub.group}:${sub.name}:${sub.version}")
+            }
+        }
