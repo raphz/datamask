@@ -78,10 +78,24 @@ DataMask.builder()
 `strict()` masks everything annotated, scans free text, and redacts on failure. `relaxed()` hides only
 high-sensitivity data and leaves prose alone — card numbers and credentials still never appear.
 
-`MaskingPolicy` also bounds the walk: `maxDepth`, `maxCollectionElements`, `scanUnannotatedText` and
-`maskMapKeys` — **on** under `strict()`, off under `relaxed()`. A map keyed by email address is a
-common enough shape that leaving keys alone in production was the wrong default; the cost is that
-masking a key changes lookup semantics in the masked copy, which is why `relaxed()` still skips it.
+`MaskingPolicy` also bounds the walk: `maxDepth`, `maxCollectionElements`, `maxTextLength`,
+`scanUnannotatedText` and `maskMapKeys` — the last two **on** under `strict()`, off under `relaxed()`.
+A map keyed by email address is a common enough shape that leaving keys alone in production was the
+wrong default; the cost is that masking a key changes lookup semantics in the masked copy, which is
+why `relaxed()` still skips it.
+
+Every bound trades **output for time, never for disclosure**. Past `maxDepth` a value becomes `null`,
+past `maxCollectionElements` the tail of a container is dropped, and past `maxTextLength` — 8 192
+characters by default — the rest of a string is redacted rather than emitted unscanned. Scanning is
+linear in the length of the text, so without that last one a single oversized value costs the thread
+that logged it milliseconds: a 2 KB message is a third of a millisecond and a 200 KB one is tens.
+Raising the cap buys back output and costs time; lowering it does the reverse. Neither direction
+lets more of the original through, which is what makes the knob safe to turn.
+
+The cut is taken carefully. Scanning reads a little past the cap to see whether a value straddles it,
+and moves the cut back to where that value starts — otherwise the cap itself would leave the first
+twelve digits of a card number in the output, a partial disclosure caused by the very bound meant to
+protect the caller.
 
 ### Overrides, for classes you cannot annotate
 
@@ -123,6 +137,24 @@ detector list. `.detector(x)` appends, so a built-in wins any tie; `.detectorFir
 ahead of them. That distinction is the difference between an institution-specific reference format
 being recognised and being reported as a payment card forever, because it happens to pass Luhn.
 
+### Detectors are gated, and a gate is a security decision
+
+Running twelve regular expressions over every string was, measurably, most of what masking cost — and
+almost all of it was spent concluding that nothing matched. So each detector declares a cheap
+necessary condition, checked once against a single-pass summary of the text:
+
+```java
+new RegexDetector("employee-id", PiiCategory.CUSTOMER_ID, pattern)
+        .gatedBy(signals -> signals.contains('#') && signals.digits() >= 6);
+```
+
+`PiiDetector.mightMatch(TextSignals)` defaults to `true`, so a detector that declares nothing runs
+exactly as before. **Answer `true` whenever there is any doubt.** A wrong `true` costs one pattern
+match; a wrong `false` means the detector is never asked, so the value is never masked — a leak with
+no exception, no failure signal and no difference in the output except somebody's card number being
+in it. State what the pattern *cannot* match without, never what it usually comes with, and add the
+positive fixture that proves it (`DetectorGateTest` is where the built-in ones live).
+
 ## What the observer is told
 
 | Signal | Fires when | Alert on it? |
@@ -133,6 +165,7 @@ being recognised and being reported as a payment card forever, because it happen
 | `onFailure` | masking failed and the `FailureMode` was applied | yes |
 | `onDepthLimitExceeded` | the graph was deeper than `maxDepth` | a modelling surprise |
 | `onCollectionTruncated` | a collection or map was cut at `maxCollectionElements` | a volume surprise |
+| `onTextTruncated` | a string was longer than `maxTextLength` and the rest was redacted | a payload is being logged whole |
 
 The first two are the split that matters. A support-note field annotated as free text produces
 detector hits on every request by design, and reporting those as unannotated PII made the one signal
@@ -189,11 +222,17 @@ The original object is never mutated: the caller is still using it.
 A `MaskPlan` is derived per class and cached in a `ClassValue`, so after the first instance masking is
 a handful of `MethodHandle` invocations plus one constructor call.
 
-**Annotating is the fast path, not a tax.** Masking a graph whose members are declared costs about
-2.5 µs; masking the same graph shape with nothing declared costs about 12.5 µs. A declared member is
-masked straight from its declaration, while an undeclared string has to be offered to every detector.
-Content scanning, not the walk, is where the time goes — the same graph with scanning off costs
-620 ns. Numbers and their caveats are in [`datamask-benchmarks`](../datamask-benchmarks/README.md).
+**Scanning used to be the whole cost, and gating the detectors removed most of it.** A clean log line
+through the masking appender went from 11 µs to 0.55 µs, and a PII-free object graph from 12.5 µs to
+1.1 µs. On a log line with an order number and a timestamp in it — which opens four of the twelve
+gates — the figure is 3.4 µs, and that is the one to quote for real text rather than for prose.
+
+Two things that used to be true and are not any more, because the numbers no longer support them:
+masking a graph with nothing declared cost five times masking one with six declared members
+(12.5 µs against 2.5), so annotating was a throughput argument. The two are now 1.14 µs and 1.21 —
+inside each other's error bars. **Annotate because a declared field is masked correctly whether or
+not a detector would have recognised its contents**, which is the argument that was always the real
+one. Numbers and their caveats are in [`datamask-benchmarks`](../datamask-benchmarks/README.md).
 
 `MaskPlanCompiler` is a port with two implementations, and `DataMask.builder()` picks between them.
 `ReflectiveMaskPlanCompiler` is the one just described. `GeneratedMaskPlanCompiler` answers from plans

@@ -39,14 +39,22 @@ public class TextSanitizerBenchmark {
     private static final String PATH = "benchmark.message";
 
     private TextSanitizer sanitizer;
+    private TextSanitizer uncapped;
 
     @Setup
     public void setUp() {
         DataMask dataMask = Fixtures.dataMask();
         sanitizer = dataMask.engine().sanitizer();
 
+        DataMask withoutCap = Fixtures.uncappedDataMask();
+        uncapped = withoutCap.engine().sanitizer();
+
         Fixtures.requireNothingDetected(dataMask, Fixtures.CLEAN_MESSAGE);
+        Fixtures.requireNothingDetected(dataMask, Fixtures.NOISY_CLEAN_MESSAGE);
         Fixtures.requireNothingDetected(dataMask, Fixtures.LONG_CLEAN_MESSAGE);
+        // Against the uncapped engine: the capped one truncates this fixture by design, which is
+        // not the same thing as having found something in it.
+        Fixtures.requireNothingDetected(withoutCap, Fixtures.OVERSIZED_CLEAN_MESSAGE);
         Fixtures.requireSomethingMasked(Fixtures.IBAN_MESSAGE, dataMask.maskText(Fixtures.IBAN_MESSAGE));
     }
 
@@ -66,5 +74,30 @@ public class TextSanitizerBenchmark {
     @Benchmark
     public String sanitizeWithIban() {
         return sanitizer.sanitize(Fixtures.IBAN_MESSAGE, PATH);
+    }
+
+    /**
+     * A clean line with an order number, a timestamp and a node id in it, which opens a third of the
+     * detector gates. This is what the pre-filter is worth on text that has structure — the number
+     * to quote, rather than the one measured on prose.
+     */
+    @Benchmark
+    public String sanitizeNoMatchWithDigits() {
+        return sanitizer.sanitize(Fixtures.NOISY_CLEAN_MESSAGE, PATH);
+    }
+
+    /** Sixty-four kilobytes, scanned as far as the policy's cap allows and redacted past it. */
+    @Benchmark
+    public String sanitizeOversizedCapped() {
+        return sanitizer.sanitize(Fixtures.OVERSIZED_CLEAN_MESSAGE, PATH);
+    }
+
+    /**
+     * The same text with the cap removed: what one oversized value used to cost the thread that
+     * logged it, every time, with nothing bounding it.
+     */
+    @Benchmark
+    public String sanitizeOversizedUncapped() {
+        return uncapped.sanitize(Fixtures.OVERSIZED_CLEAN_MESSAGE, PATH);
     }
 }

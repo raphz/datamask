@@ -85,6 +85,22 @@ When adding a detector: if the identifier has a check digit, use it and require 
 require enough surrounding structure that false positives stay rare (see `internationalPhone`, which
 only matches numbers written with a `+`).
 
+### A detector gate can leak without anything going red
+
+`RegexDetector.gatedBy` / `PiiDetector.mightMatch` skips a detector whose pattern provably cannot
+match — an `@` for an address, twelve digits for a card, six consecutive capitals for a BIC. That is
+where most of the scanning cost went, and it is also the one construct in this library that can be
+wrong with **no symptom at all**: the pattern still works, the checksum still holds, every test of
+the detector still passes, and the value is simply never examined.
+
+- The condition must be **necessary** for the pattern to match. Derive it from the pattern, state
+  what the pattern cannot do without, and never what a value usually comes with.
+- **Unsure means `true`.** A wrong `true` costs one pattern match. `TextSignals.contains` follows the
+  same rule and reports any character it does not track as present.
+- A new gate is not written until its positive fixtures are in `DetectorGateTest`, which holds every
+  fixture three ways: the detector finds it, the gate admits it, and the engine removes it from the
+  text. The third is what catches a gate and a pattern that have drifted apart.
+
 ## 6. The observer signal that matters
 
 `MaskingObserver.onUnannotatedPii` fires when a detector finds PII in a value nobody annotated. **It
@@ -178,6 +194,15 @@ exception list is the worked example: a batch failing item by item suppresses on
 each with its own cause chain, and both logging modules walked all of them. If you are iterating
 something whose size the application controls, bound it and report `onCollectionTruncated`. Dropping
 the tail discloses nothing; not bounding it turns a log statement into an outage.
+
+**Text is a container too.** Scanning is linear in characters, so `MaskingPolicy.maxTextLength`
+bounds it and everything past the cap is redacted rather than emitted unscanned — the direction that
+matters, because passing the tail through would make "put 8 KB of prose in front of it" a way around
+the scanner. A bound that cuts at a fixed offset can cut *through* a value, so `TextSanitizer` reads a
+short margin past the cap and moves the cut back to the start of any finding that straddles it.
+Without that, the cap would leave the first twelve digits of a card number in the output: a partial
+disclosure created by the protection itself. Any new bound on text owes the same question — what does
+a value sitting exactly on the boundary look like afterwards?
 
 ## Reviewing a change here
 

@@ -13,6 +13,10 @@ dependencies {
     implementation project(':datamask-core')
     implementation project(':datamask-logback')
     implementation project(':datamask-log4j2')
+    // The JDBC wrapper proxies result sets, which is the only cost in this library that scales with
+    // the size of a result rather than with the number of calls. It is measured here because the
+    // escape hatch that turns it off should be taken on a number rather than on a suspicion.
+    implementation project(':datamask-jdbc')
 
     implementation libs.jmh.core
     annotationProcessor libs.jmh.generator.annprocess

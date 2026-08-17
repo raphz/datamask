@@ -64,9 +64,15 @@ of it, which is exactly the change an application makes when it adopts this modu
 | `MaskingEngineBenchmark.maskCleanGraph` | `MaskingEngine.mask` on a PII-free object graph: the no-change short-circuit, which returns the same instance and allocates no copy |
 | `MaskingEngineBenchmark.maskCleanGraphWithoutTextScan` | The same graph with content scanning switched off — the walk and nothing else, so the gap to the line above is what scanning costs a graph that had nothing to find |
 | `MaskingEngineBenchmark.maskGraphWithPii` | The same shape, six declared members, all masked and the graph rebuilt |
-| `TextSanitizerBenchmark.sanitizeNoMatch` | The regex fan-out on a normal log line that matches nothing — the cost the improvements document calls out as unfiltered |
+| `TextSanitizerBenchmark.sanitizeNoMatch` | The detector set on a normal log line of prose that matches nothing — the path the gates were built for |
+| `TextSanitizerBenchmark.sanitizeNoMatchWithDigits` | **The honest gate case.** The same answer on a line with an order number and a timestamp in it, which opens four of the twelve gates. The number to quote for a real log line |
 | `TextSanitizerBenchmark.sanitizeLongNoMatch` | The same answer on ~2 KB, which says whether that cost is per-call or per-character |
 | `TextSanitizerBenchmark.sanitizeWithIban` | One match in the same short line: detection, masking, a rebuilt string |
+| `TextSanitizerBenchmark.sanitizeOversizedCapped` | 64 KB scanned as far as `MaskingPolicy.maxTextLength` allows, with the rest redacted unread |
+| `TextSanitizerBenchmark.sanitizeOversizedUncapped` | The same 64 KB with the cap removed — the pair is what the cap is worth, measured rather than extrapolated |
+| `JdbcProxyBenchmark.rawResultSetRow` | **Baseline.** Ten columns from an unwrapped stub result set, so what is left between it and the next row is the forwarding |
+| `JdbcProxyBenchmark.proxiedResultSetRow` | The same row through `MaskingDataSource` — one `Method.invoke` per call, on the one path whose cost scales with the size of a result |
+| `JdbcProxyBenchmark.unwrappedResultSetRow` | And through `withoutResultSetWrapping()`, which is how the escape hatch proves it does what it says |
 | `PlanCompilerBenchmark.compilePlansReflectively` | What three types cost the first time they are seen, derived by reflection |
 | `PlanCompilerBenchmark.compilePlansFromGeneratedCode` | The same three from the plans `datamask-build-processor` wrote beside them |
 | `PlanCompilerBenchmark.maskWithReflectivePlans` | Steady state: masking through warm reflective plans (`MethodHandle` per member) |
@@ -82,77 +88,103 @@ of it, which is exactly the change an application makes when it adopts this modu
 Apple M2 Pro (10 cores), macOS 26.6.1, Temurin OpenJDK 25.0.4+7, `-f 1 -wi 3 -i 5 -r 1s -w 1s`,
 2026-08-17. Average time per operation, lower is better.
 
-| Benchmark | ns/op | ± |
-|---|---:|---:|
-| `LogbackAppenderBenchmark.plainAppenderCleanLine` | 2.6 | 0.1 |
-| `LogbackAppenderBenchmark.maskingAppenderCleanLine` | 11 081 | 330 |
-| `LogbackAppenderBenchmark.maskingAppenderIbanLine` | 14 819 | 450 |
-| `LogbackAppenderBenchmark.maskingAppenderCardLine` | 14 089 | 1 903 |
-| `LogbackAppenderBenchmark.plainAppenderMdcAndException` | 2.3 | 0.03 |
-| `LogbackAppenderBenchmark.maskingAppenderMdcAndException` | 48 485 | 314 |
-| `Log4j2RewriteBenchmark.identityRewriteCleanLine` | 0.43 | 0.02 |
-| `Log4j2RewriteBenchmark.maskingRewriteCleanLine` | 12 194 | 1 438 |
-| `Log4j2RewriteBenchmark.maskingRewriteIbanLine` | 15 513 | 1 975 |
-| `Log4j2RewriteBenchmark.maskingRewriteCardLine` | 14 105 | 1 469 |
-| `Log4j2RewriteBenchmark.identityRewriteContextAndException` | 0.43 | 0.01 |
-| `Log4j2RewriteBenchmark.maskingRewriteContextAndException` | 53 235 | 4 267 |
-| `MaskingEngineBenchmark.maskCleanGraph` | 12 466 | 104 |
-| `MaskingEngineBenchmark.maskCleanGraphWithoutTextScan` | 620 | 2 |
-| `MaskingEngineBenchmark.maskGraphWithPii` | 2 532 | 130 |
-| `TextSanitizerBenchmark.sanitizeNoMatch` | 10 860 | 142 |
-| `TextSanitizerBenchmark.sanitizeLongNoMatch` | 328 557 | 22 055 |
-| `TextSanitizerBenchmark.sanitizeWithIban` | 14 449 | 335 |
-| `PlanCompilerBenchmark.compilePlansReflectively` | 30 521 | 2 610 |
-| `PlanCompilerBenchmark.compilePlansFromGeneratedCode` | 9 198 | 9 969 |
-| `PlanCompilerBenchmark.maskWithReflectivePlans` | 2 520 | 130 |
-| `PlanCompilerBenchmark.maskWithGeneratedPlans` | 2 731 | 657 |
+The `before` column is the same run taken earlier the same day, on the same machine and the same
+fixtures, before the detector gates, the text length cap and the traversal work landed. It is kept
+here because the shape of the change is more useful than either column alone —
+[`docs/IMPROVEMENTS.md`](../docs/IMPROVEMENTS.md) records what each item was worth.
+
+| Benchmark | before | after | ± |
+|---|---:|---:|---:|
+| `LogbackAppenderBenchmark.plainAppenderCleanLine` | 2.6 | 2.3 | 0.04 |
+| `LogbackAppenderBenchmark.maskingAppenderCleanLine` | 11 081 | **547** | 10 |
+| `LogbackAppenderBenchmark.maskingAppenderIbanLine` | 14 819 | 3 608 | 781 |
+| `LogbackAppenderBenchmark.maskingAppenderCardLine` | 14 089 | 1 145 | 29 |
+| `LogbackAppenderBenchmark.plainAppenderMdcAndException` | 2.3 | 2.6 | 0.08 |
+| `LogbackAppenderBenchmark.maskingAppenderMdcAndException` | 48 485 | 8 829 | 277 |
+| `Log4j2RewriteBenchmark.identityRewriteCleanLine` | 0.43 | 0.50 | 0.14 |
+| `Log4j2RewriteBenchmark.maskingRewriteCleanLine` | 12 194 | 594 | 20 |
+| `Log4j2RewriteBenchmark.maskingRewriteIbanLine` | 15 513 | 3 364 | 117 |
+| `Log4j2RewriteBenchmark.maskingRewriteCardLine` | 14 105 | 1 106 | 215 |
+| `Log4j2RewriteBenchmark.identityRewriteContextAndException` | 0.43 | 0.44 | 0.12 |
+| `Log4j2RewriteBenchmark.maskingRewriteContextAndException` | 53 235 | 10 403 | 723 |
+| `MaskingEngineBenchmark.maskCleanGraph` | 12 466 | 1 143 | 45 |
+| `MaskingEngineBenchmark.maskCleanGraphWithoutTextScan` | 620 | 536 | 6 |
+| `MaskingEngineBenchmark.maskGraphWithPii` | 2 532 | 1 213 | 53 |
+| `TextSanitizerBenchmark.sanitizeNoMatch` | 10 860 | 543 | 36 |
+| `TextSanitizerBenchmark.sanitizeNoMatchWithDigits` | — | 3 435 | 299 |
+| `TextSanitizerBenchmark.sanitizeLongNoMatch` | 328 557 | 17 272 | 57 |
+| `TextSanitizerBenchmark.sanitizeWithIban` | 14 449 | 3 059 | 88 |
+| `TextSanitizerBenchmark.sanitizeOversizedCapped` | — | 73 980 | 7 142 |
+| `TextSanitizerBenchmark.sanitizeOversizedUncapped` | — | 571 221 | 31 294 |
+| `JdbcProxyBenchmark.rawResultSetRow` | — | 3.6 | 0.07 |
+| `JdbcProxyBenchmark.proxiedResultSetRow` | — | 65.8 | 3.9 |
+| `JdbcProxyBenchmark.unwrappedResultSetRow` | — | 3.8 | 0.5 |
+| `PlanCompilerBenchmark.compilePlansReflectively` | 30 521 | 30 230 | 2 477 |
+| `PlanCompilerBenchmark.compilePlansFromGeneratedCode` | 9 198 | 8 826 | 10 524 |
+| `PlanCompilerBenchmark.maskWithReflectivePlans` | 2 520 | 1 122 | 120 |
+| `PlanCompilerBenchmark.maskWithGeneratedPlans` | 2 731 | 1 140 | 22 |
 
 ## What a reader should conclude
 
-**A clean line through the masking appender costs about 11 µs, which is roughly 90 000 lines per
-second per core.** That is enough for an ordinary service and it is not enough to put in front of an
-unbounded log volume without thinking about it. The honest headline is not a ratio against 2.6 ns —
-the sink does nothing, so that ratio only says "masking is not free" — it is the absolute number and
-what it is made of.
+**A clean line through the masking appender costs about 0.55 µs, which is on the order of two
+million lines per second per core.** It was 11 µs before the detector gates landed. The honest
+headline is not a ratio against 2.3 ns — the sink does nothing, so that ratio only says "masking is
+not free" — it is the absolute number and what it is made of.
 
-**Almost all of it is the regex fan-out, and none of it is the engine.**
-`TextSanitizerBenchmark.sanitizeNoMatch` is 10.9 µs of the 11.1 µs a clean logback line costs: 98%
-of a clean line is twelve detectors reading a string that contains nothing. The same shows up on the
-engine side, where switching content scanning off takes a clean object graph from 12.5 µs to 620 ns —
-a factor of twenty. A `-prof stack` run puts essentially all of the time in
-`java.util.regex.Pattern`, mostly in character-class predicates. **Improvement item 1 in
-`docs/IMPROVEMENTS.md` — a single-pass character-class gate before the detector set — is not a
-micro-optimisation. It is the difference between this module being cheap and this module being the
-dominant cost of logging.**
+**It used to be almost entirely the regex fan-out, and that is what changed.** `sanitizeNoMatch` was
+10.9 µs of the 11.1 µs a clean logback line cost: 98% of a clean line was twelve detectors reading a
+string that contains nothing. Each detector now declares a cheap necessary condition — an `@`, twelve
+digits, six consecutive capitals — checked once against a one-pass summary of the text, and a pattern
+that cannot match does not run. On a line of prose that takes eleven of the twelve off the path, and
+the line costs 543 ns instead of 10 860.
 
-**Scanning is per character, so a long line is a long scan.** 70 characters cost 10.9 µs and 2 000
-characters cost 329 µs, both about 160 ns per character. A `maxTextLength` on `MaskingPolicy`
-(improvement item 6) has a real number behind it, and the pre-filter above would move this cost too.
+**But quote 3.4 µs, not 543 ns, when someone asks what a real log line costs.**
+`sanitizeNoMatchWithDigits` exists to keep this section honest: give a clean line an order number and
+a timestamp — `order 8891273 accepted at 12:04:33 by node 7` — and the digits and colons open four of
+the twelve gates, so it costs 3 435 ns. Still a third of what it was, and a long way from the number
+the prose fixture produces. A filter measured only on prose flatters itself.
 
-**A line with PII costs barely more than a line without.** 14.8 µs against 11.1 µs: detecting an
-IBAN, pseudonymising it and rebuilding the event adds about 3.7 µs on top of a scan that had to
-happen anyway. Masking is not what is expensive here — looking is.
+**Scanning is still per character, and now it is bounded.** 2 KB of clean text costs 17.3 µs, down
+from 329 µs, because the gates apply to a long string exactly as they do to a short one. The tail
+risk is capped rather than removed: `MaskingPolicy.maxTextLength` stops the scan at 8 192 characters
+and redacts the rest, which on 64 KB is 74 µs against 571 µs uncapped.
 
-**The same holds, more sharply, for object graphs: PII-free data costs *more* than data with PII in
-it.** 12.5 µs for the clean graph against 2.5 µs for the annotated one. Nothing is wrong with that
-number: an annotated member is masked from its declaration and never scanned, while an unannotated
-string has to be offered to every detector. A domain that declares what its fields are is on the
-fast path; one that relies on content detection is not.
+**A line with PII costs about six times a line without** — 3 608 ns against 547 for logback. Before
+the gates it was 14.8 µs against 11.1, a difference of a third, because the scan dominated both.
+Now that finding nothing is cheap, the cost of a hit is visible for what it is: detection, then
+pseudonymisation, then rebuilding the event.
 
-**MDC and exceptions are the expensive part of an event, because they multiply the scans.** Three
-MDC entries plus an exception with a cause take a logback event from 11 µs to 48 µs — six strings
-scanned instead of one. Anything that trims the fan-out helps here four times over.
+**PII-free data no longer costs more than data with PII in it.** It used to, sharply — 12.5 µs for a
+clean graph against 2.5 µs for an annotated one — because an annotated member is masked from its
+declaration while an unannotated string was offered to every detector. That asymmetry is gone: the
+two are 1 143 and 1 213 ns, inside each other's error bars. **Annotating is no longer a throughput
+argument.** It is a correctness argument, which is what it always should have been.
 
-**logback and log4j2 cost the same.** 11.1 µs against 12.2 µs on the clean line, and the same shape
+**MDC and exceptions are still the expensive part of an event, because they multiply the scans.**
+Three MDC entries plus an exception with a cause take a logback event from 547 ns to 8 829 — sixteen
+times, and it is the shape a production error actually takes. Six strings scanned instead of one,
+and the largest number here that is not a deliberate stress case.
+
+**logback and log4j2 cost the same.** 547 ns against 594 on the clean line, and the same shape
 everywhere else, which is what should happen: both integrations are thin, and the cost is the engine
 underneath them.
 
-**`datamask-build-processor` pays off at startup, not in steady state.** Three types cost 30.5 µs to
-plan by reflection and 9.2 µs from generated code — about three times cheaper, once per class per
-process. Masking through warm plans is indistinguishable between the two (2.5 µs against 2.7 µs,
+**The JDBC result-set proxy is cheap, and the suspicion about it was wrong.** A ten-column row costs
+3.6 ns unwrapped and 65.8 ns through the proxy — 18× against a stub that does nothing at all, which
+is about 5.6 ns per forwarded call. A thousand-row fetch of ten columns therefore pays roughly 62 µs
+in total, next to a real driver doing parsing, sockets and a network round trip.
+`MaskingDataSource.withoutResultSetWrapping()` exists and works — `unwrappedResultSetRow` lands on
+the raw figure at 3.8 ns — but the number says leave it shut, because opening it gives up the
+sanitising of every error that surfaces during a fetch.
+
+**`datamask-build-processor` pays off at startup, not in steady state.** Three types cost 30.2 µs to
+plan by reflection and 8.8 µs from generated code — about three times cheaper, once per class per
+process. Masking through warm plans is indistinguishable between the two (1 122 ns against 1 140,
 inside the noise), which is expected: once a plan is compiled, the work is masking values, not
 reaching members. So the processor's case is startup time and native-image compatibility, and it
-should not be sold as a throughput feature.
+should not be sold as a throughput feature. One caveat on the cold pair: its error bar is larger than
+its own score, because most iterations measure a class that has already been planned. Trust the
+ratio, not the digits.
 
 ## How the benchmarks are set up, and why
 

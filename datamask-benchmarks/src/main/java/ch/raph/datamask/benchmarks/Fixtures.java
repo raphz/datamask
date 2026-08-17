@@ -1,6 +1,7 @@
 package ch.raph.datamask.benchmarks;
 
 import ch.raph.datamask.application.DataMask;
+import ch.raph.datamask.domain.MaskingPolicy;
 
 /**
  * The inputs every benchmark here shares, and the checks that keep them honest.
@@ -33,6 +34,17 @@ final class Fixtures {
     /** A representative application log line with nothing in it worth masking. */
     static final String CLEAN_MESSAGE = "settlement batch accepted by the clearing gateway, retry window closed";
 
+    /**
+     * The same idea with the punctuation a real log line has: an order number, a timestamp, a node
+     * id. Nothing in it is PII, but the digits and the colons open several detector gates that
+     * {@link #CLEAN_MESSAGE} closes.
+     *
+     * <p>It is here to keep the gate numbers honest. A pre-filter measured only on prose would look
+     * like a tenfold win on every line, and it is not: this is the line that says what the filter is
+     * worth when the text has structure in it, which most log lines do.
+     */
+    static final String NOISY_CLEAN_MESSAGE = "order 8891273 accepted at 12:04:33 by node 7, retry window closed";
+
     /** The same line with an IBAN in it — the single most common piece of PII in a banking log. */
     static final String IBAN_MESSAGE =
             "settlement batch rejected for CH93 0076 2011 6238 5295 7 by the clearing gateway";
@@ -47,11 +59,29 @@ final class Fixtures {
      */
     static final String LONG_CLEAN_MESSAGE = longCleanMessage();
 
+    /**
+     * Sixty-four kilobytes of it: a payload logged whole, which is the shape the length cap exists
+     * for. Well past {@link MaskingPolicy#maxTextLength()}, so the capped and uncapped engines do
+     * visibly different amounts of work on it.
+     */
+    static final String OVERSIZED_CLEAN_MESSAGE = repeatTo(64 * 1_024);
+
     private Fixtures() {}
 
     /** The engine every benchmark measures, under strict policy — which is what a bank deploys. */
     static DataMask dataMask() {
         return DataMask.builder().secret(SECRET).build();
+    }
+
+    /**
+     * The same engine with the text length cap effectively removed, so a benchmark can measure what
+     * the cap is worth by measuring both sides of it in one run rather than by arithmetic.
+     */
+    static DataMask uncappedDataMask() {
+        return DataMask.builder()
+                .secret(SECRET)
+                .policy(MaskingPolicy.strict().withMaxTextLength(Integer.MAX_VALUE))
+                .build();
     }
 
     /**
@@ -80,8 +110,12 @@ final class Fixtures {
     }
 
     private static String longCleanMessage() {
-        StringBuilder text = new StringBuilder(2_048);
-        while (text.length() < 2_000) {
+        return repeatTo(2_000);
+    }
+
+    private static String repeatTo(int characters) {
+        StringBuilder text = new StringBuilder(characters + CLEAN_MESSAGE.length() + 2);
+        while (text.length() < characters) {
             text.append(CLEAN_MESSAGE).append("; ");
         }
         return text.toString();

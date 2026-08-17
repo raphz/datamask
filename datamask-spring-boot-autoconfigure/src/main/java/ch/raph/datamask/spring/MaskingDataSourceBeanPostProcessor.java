@@ -66,7 +66,8 @@ final class MaskingDataSourceBeanPostProcessor implements BeanPostProcessor, Ord
                     beanName);
             return bean;
         }
-        return new MaskingDataSource(dataSource, dataMask.getObject());
+        MaskingDataSource wrapped = new MaskingDataSource(dataSource, dataMask.getObject());
+        return wrapsResultSets() ? wrapped : wrapped.withoutResultSetWrapping();
     }
 
     /**
@@ -86,5 +87,11 @@ final class MaskingDataSourceBeanPostProcessor implements BeanPostProcessor, Ord
     private boolean isExcluded(String beanName) {
         DataMaskProperties configured = properties.getIfAvailable();
         return configured != null && configured.jdbc().excludedBeans().contains(beanName);
+    }
+
+    /** Defaults to wrapping when nothing is configured, which is the fail-closed direction. */
+    private boolean wrapsResultSets() {
+        DataMaskProperties configured = properties.getIfAvailable();
+        return configured == null || configured.jdbc().wrapResultSets();
     }
 }

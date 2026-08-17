@@ -295,7 +295,8 @@ public final class DataMask {
             MaskPlanCompiler resolvedCompiler =
                     compiler != null ? compiler : GeneratedMaskPlanCompiler.orReflective(overrides);
 
-            TextSanitizer sanitizer = new TextSanitizer(resolvedDetectors, maskers, contexts, observer);
+            TextSanitizer sanitizer =
+                    new TextSanitizer(resolvedDetectors, maskers, contexts, observer, effectivePolicy);
             MaskingEngine engine =
                     new MaskingEngine(resolvedCompiler, maskers, effectivePolicy, sanitizer, contexts, observer);
 

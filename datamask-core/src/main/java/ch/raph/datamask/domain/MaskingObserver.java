@@ -55,4 +55,16 @@ public interface MaskingObserver {
      * event, so nothing downstream could group them.
      */
     default void onCollectionTruncated(String path, int kept) {}
+
+    /**
+     * A string was longer than {@link MaskingPolicy#maxTextLength()}, so only its first
+     * {@code scanned} characters were examined and everything after them was redacted.
+     *
+     * <p>Worth counting, and worth looking into when it fires: scanning is linear in the length of
+     * the text, so a value that reaches this limit was about to cost a millisecond of the caller's
+     * time. It usually means a payload is being logged whole. The cut is not a masking decision —
+     * nothing beyond it survives into the output — so this is a signal about volume, like
+     * {@link #onCollectionTruncated}, rather than about disclosure.
+     */
+    default void onTextTruncated(String path, int scanned) {}
 }

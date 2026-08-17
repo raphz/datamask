@@ -27,11 +27,26 @@ final class JdbcMasking {
     private final MaskingEngine engine;
     private final MaskingObserver observer;
     private final SqlExceptionSanitizer exceptions;
+    private final boolean wrapResultSets;
 
     JdbcMasking(MaskingEngine engine) {
+        this(engine, true);
+    }
+
+    private JdbcMasking(MaskingEngine engine, boolean wrapResultSets) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.observer = engine.observer();
         this.exceptions = new SqlExceptionSanitizer(engine);
+        this.wrapResultSets = wrapResultSets;
+    }
+
+    JdbcMasking withoutResultSetWrapping() {
+        return new JdbcMasking(engine, false);
+    }
+
+    /** Whether result sets are proxied — see {@link MaskingDataSource#withoutResultSetWrapping()}. */
+    boolean wrapsResultSets() {
+        return wrapResultSets;
     }
 
     /** Sanitises a database exception on its way out of a JDBC call; anything else passes through. */

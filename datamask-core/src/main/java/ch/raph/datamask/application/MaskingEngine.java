@@ -44,6 +44,12 @@ import org.jspecify.annotations.Nullable;
  * <p>Two invariants hold everywhere in here. The original is never mutated, because the caller is
  * still using it. And every failure path produces less information than it started with, never
  * more — a bug in a masker must not be a way to disclose the value it failed to mask.
+ *
+ * <p>Two things in the traversal are shaped by what it costs rather than by what it does, because
+ * this runs once per argument of every log statement. The cycle guard is allocated on first entry
+ * into a structure rather than per call, so masking a string or a number allocates nothing at all.
+ * And the path is a buffer that is pushed and popped as the walk descends, turned into a string
+ * only where one is consumed — see {@link WalkPath}.
  */
 public final class MaskingEngine {
 
@@ -84,7 +90,21 @@ public final class MaskingEngine {
      * every other site they report; this is the one they could not reach.
      */
     public @Nullable Object mask(@Nullable Object value, String path) {
-        return descend(value, path, 0, new IdentityHashMap<>());
+        if (value == null) {
+            return null;
+        }
+        // A leaf is the most common thing an integration hands over — a log argument is a string or
+        // a number far more often than it is a graph — and it needs neither a cycle guard nor a path
+        // buffer. These two cases mirror what descend() does with them, and exist only to reach the
+        // same answer without allocating on the way.
+        if (value instanceof CharSequence text) {
+            return policy.scanUnannotatedText() ? sanitizer.sanitize(text, path) : value;
+        }
+        Class<?> runtime = value.getClass();
+        if (!runtime.isArray() && Types.isLeaf(runtime) && !Types.isScannableText(runtime)) {
+            return value;
+        }
+        return descend(value, new WalkPath(path), 0, null);
     }
 
     /** Masks the PII inside a string, leaving the rest of the text intact. */
@@ -114,17 +134,17 @@ public final class MaskingEngine {
         return observer;
     }
 
-    private Object descend(Object value, String path, int depth, Map<Object, Object> inProgress) {
+    private Object descend(Object value, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
         if (value == null) {
             return null;
         }
         if (depth > policy.maxDepth()) {
-            observer.onDepthLimitExceeded(path);
+            observer.onDepthLimitExceeded(path.toString());
             return null;
         }
 
         return switch (value) {
-            case CharSequence text -> policy.scanUnannotatedText() ? sanitizer.sanitize(text, path) : value;
+            case CharSequence text -> policy.scanUnannotatedText() ? sanitizer.sanitize(text, path, false) : value;
             case Collection<?> collection -> descendCollection(collection, path, depth, inProgress);
             case Map<?, ?> map -> descendMap(map, path, depth, inProgress);
             case Optional<?> optional -> descendOptional(optional, path, depth, inProgress);
@@ -143,15 +163,18 @@ public final class MaskingEngine {
     }
 
     private Object descendObject(
-            Object value, Class<?> runtime, String path, int depth, Map<Object, Object> inProgress) {
+            Object value, Class<?> runtime, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
         // An object that points back at itself cannot have its cycle reproduced, because its copy
         // does not exist until every member has been masked. So the back-reference becomes null.
         // What it must never become is the original: that instance was never masked in place, and
         // planting it inside the masked graph would put the raw values straight back.
-        if (inProgress.containsKey(value)) {
+        if (inProgress != null && inProgress.containsKey(value)) {
             return null;
         }
-        inProgress.put(value, null);
+        // Allocated here rather than per call to mask(). A cycle can only run through the chain of
+        // structures currently being walked, so nothing needs one until the walk enters the first.
+        Map<Object, Object> trail = inProgress != null ? inProgress : new IdentityHashMap<>();
+        trail.put(value, null);
         try {
             MaskPlan plan = compiler.planFor(runtime);
             if (plan.isFailed()) {
@@ -159,7 +182,7 @@ public final class MaskingEngine {
                 // so passing it through is not an option; the failure policy decides instead.
                 return onStructuralFailure(
                         value,
-                        path,
+                        path.toString(),
                         new IllegalStateException("cannot mask " + runtime.getName() + ": " + plan.failure()));
             }
             if (plan.isOpaque()) {
@@ -172,18 +195,28 @@ public final class MaskingEngine {
 
             for (int i = 0; i < members.size(); i++) {
                 MemberPlan member = members.get(i);
-                String memberPath =
-                        path.isEmpty() ? runtime.getSimpleName() + "." + member.name() : path + "." + member.name();
-
                 Object raw = member.accessor().get(value);
-                Object result =
-                        switch (member.action()) {
-                            case MaskAction.Mask(PiiDescriptor descriptor) ->
-                                maskLeaf(raw, descriptor, member.declaredType(), memberPath);
-                            case MaskAction.Descend _ -> descend(raw, memberPath, depth + 1, inProgress);
-                            case MaskAction.Keep _ -> raw;
-                            case MaskAction.Drop _ -> null;
-                        };
+
+                int mark = path.mark();
+                path.member(runtime, member.name());
+                Object result;
+                try {
+                    result = switch (member.action()) {
+                        // toString() here and not before: a member that is kept, dropped or
+                        // holds nothing never needs its path spelled out, and on a graph
+                        // with no PII in it that is every member.
+                        case MaskAction.Mask(PiiDescriptor descriptor) ->
+                            maskLeaf(raw, descriptor, member.declaredType(), path.toString());
+                        case MaskAction.Descend _ -> descend(raw, path, depth + 1, trail);
+                        case MaskAction.Keep _ -> raw;
+                        case MaskAction.Drop _ -> null;
+                    };
+                } finally {
+                    // In a finally because a member below may have failed structurally and been
+                    // handled there: the walk carries on with the next member, and it must carry on
+                    // from this object's path rather than from wherever the failure happened.
+                    path.reset(mark);
+                }
                 result = Coercion.toDeclaredType(result, member.declaredType());
                 masked[i] = result;
                 changed |= result != raw;
@@ -197,9 +230,9 @@ public final class MaskingEngine {
             // failure here would quietly undo FailureMode.THROW for every nested field.
             throw deliberate;
         } catch (Throwable failure) {
-            return onStructuralFailure(value, path, failure);
+            return onStructuralFailure(value, path.toString(), failure);
         } finally {
-            inProgress.remove(value);
+            trail.remove(value);
         }
     }
 
@@ -209,7 +242,8 @@ public final class MaskingEngine {
      * instance on every clean graph, which reads as "changed" to the enclosing object and forces a
      * rebuild of a record that carried no PII at all.
      */
-    private Object descendOptional(Optional<?> optional, String path, int depth, Map<Object, Object> inProgress) {
+    private Object descendOptional(
+            Optional<?> optional, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
         if (optional.isEmpty()) {
             return optional;
         }
@@ -218,9 +252,9 @@ public final class MaskingEngine {
         return masked == inner ? optional : Optional.ofNullable(masked);
     }
 
-    private Object scanUri(URI uri, String path) {
+    private Object scanUri(URI uri, WalkPath path) {
         String text = uri.toString();
-        String safe = sanitizer.sanitize(text, path);
+        String safe = sanitizer.sanitize(text, path, false);
         if (safe.equals(text)) {
             return uri;
         }
@@ -229,35 +263,37 @@ public final class MaskingEngine {
         } catch (IllegalArgumentException notAUri) {
             // Masking left something that is no longer a URI. Handing back the original would
             // disclose exactly what was just detected, so the value is dropped instead.
-            observer.onFailure(path, notAUri);
+            observer.onFailure(path.toString(), notAUri);
             return null;
         }
     }
 
-    private Object scanUrl(URL url, String path) {
+    private Object scanUrl(URL url, WalkPath path) {
         String text = url.toString();
-        String safe = sanitizer.sanitize(text, path);
+        String safe = sanitizer.sanitize(text, path, false);
         if (safe.equals(text)) {
             return url;
         }
         try {
             return URI.create(safe).toURL();
         } catch (IllegalArgumentException | MalformedURLException notAUrl) {
-            observer.onFailure(path, notAUrl);
+            observer.onFailure(path.toString(), notAUrl);
             return null;
         }
     }
 
-    private Object descendCollection(Collection<?> collection, String path, int depth, Map<Object, Object> inProgress) {
-        if (inProgress.containsKey(collection)) {
+    private Object descendCollection(
+            Collection<?> collection, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
+        if (inProgress != null && inProgress.containsKey(collection)) {
             return inProgress.get(collection);
         }
         Collection<Object> copy = newCollectionLike(collection);
+        Map<Object, Object> trail = inProgress != null ? inProgress : new IdentityHashMap<>();
         // Unlike an object, a container's copy exists before its contents are walked, so a
         // back-reference can point at the copy and the cycle survives masking intact. Registering
         // it is not a nicety: a list holding itself would otherwise unroll to the depth limit, and
         // one holding itself twice would unroll exponentially and take the caller down with it.
-        inProgress.put(collection, copy);
+        trail.put(collection, copy);
         try {
             int index = 0;
             boolean changed = false;
@@ -265,54 +301,74 @@ public final class MaskingEngine {
                 if (index >= policy.maxCollectionElements()) {
                     // Bounded on purpose: a runaway collection must not turn a log statement into an
                     // outage. Dropping the tail discloses nothing, unlike passing it through unmasked.
-                    observer.onCollectionTruncated(path, index);
+                    observer.onCollectionTruncated(path.toString(), index);
                     changed = true;
                     break;
                 }
-                Object masked = descend(element, path + "[" + index + "]", depth + 1, inProgress);
+                int mark = path.mark();
+                path.index(index);
+                Object masked;
+                try {
+                    masked = descend(element, path, depth + 1, trail);
+                } finally {
+                    path.reset(mark);
+                }
                 changed |= masked != element;
                 changed |= !addMasked(copy, masked);
                 index++;
             }
             return changed ? copy : collection;
         } finally {
-            inProgress.remove(collection);
+            trail.remove(collection);
         }
     }
 
-    private Object descendMap(Map<?, ?> map, String path, int depth, Map<Object, Object> inProgress) {
-        if (inProgress.containsKey(map)) {
+    private Object descendMap(Map<?, ?> map, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
+        if (inProgress != null && inProgress.containsKey(map)) {
             return inProgress.get(map);
         }
         Map<Object, Object> copy = newMapLike(map);
-        inProgress.put(map, copy);
+        Map<Object, Object> trail = inProgress != null ? inProgress : new IdentityHashMap<>();
+        trail.put(map, copy);
         try {
-            return descendEntries(map, copy, path, depth, inProgress);
+            return descendEntries(map, copy, path, depth, trail);
         } finally {
-            inProgress.remove(map);
+            trail.remove(map);
         }
     }
 
     private Object descendEntries(
-            Map<?, ?> map, Map<Object, Object> copy, String path, int depth, Map<Object, Object> inProgress) {
+            Map<?, ?> map, Map<Object, Object> copy, WalkPath path, int depth, Map<Object, Object> inProgress) {
         int index = 0;
         boolean changed = false;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             if (index >= policy.maxCollectionElements()) {
-                observer.onCollectionTruncated(path, index);
+                observer.onCollectionTruncated(path.toString(), index);
                 changed = true;
                 break;
             }
-            // The path is positional on purpose. A map is often keyed by exactly the PII this
-            // library exists to hide, and the path reaches observers and exception messages —
-            // embedding the key would leak it through the reporting channel.
-            String entryPath = path + "{" + index + "}";
-            // Keys carry PII more often than people expect — a map keyed by email address is a
-            // common shape — but masking them changes lookup semantics, so it is opt-in.
-            Object key = policy.maskMapKeys()
-                    ? descend(entry.getKey(), entryPath + "{key}", depth + 1, inProgress)
-                    : entry.getKey();
-            Object masked = descend(entry.getValue(), entryPath, depth + 1, inProgress);
+            int mark = path.mark();
+            path.entry(index);
+            Object key;
+            Object masked;
+            try {
+                // Keys carry PII more often than people expect — a map keyed by email address is a
+                // common shape — but masking them changes lookup semantics, so it is opt-in.
+                if (policy.maskMapKeys()) {
+                    int keyMark = path.mark();
+                    path.key();
+                    try {
+                        key = descend(entry.getKey(), path, depth + 1, inProgress);
+                    } finally {
+                        path.reset(keyMark);
+                    }
+                } else {
+                    key = entry.getKey();
+                }
+                masked = descend(entry.getValue(), path, depth + 1, inProgress);
+            } finally {
+                path.reset(mark);
+            }
             changed |= masked != entry.getValue() || key != entry.getKey();
             changed |= !putMasked(copy, key, masked);
             index++;
@@ -345,28 +401,36 @@ public final class MaskingEngine {
         }
     }
 
-    private Object descendArray(Object array, String path, int depth, Map<Object, Object> inProgress) {
+    private Object descendArray(Object array, WalkPath path, int depth, @Nullable Map<Object, Object> inProgress) {
         Class<?> component = array.getClass().getComponentType();
         if (component.isPrimitive()) {
             return array;
         }
-        if (inProgress.containsKey(array)) {
+        if (inProgress != null && inProgress.containsKey(array)) {
             return inProgress.get(array);
         }
         int length = Array.getLength(array);
         Object copy = Array.newInstance(component, length);
-        inProgress.put(array, copy);
+        Map<Object, Object> trail = inProgress != null ? inProgress : new IdentityHashMap<>();
+        trail.put(array, copy);
         try {
             boolean changed = false;
             for (int i = 0; i < length; i++) {
                 Object element = Array.get(array, i);
-                Object masked = descend(element, path + "[" + i + "]", depth + 1, inProgress);
+                int mark = path.mark();
+                path.index(i);
+                Object masked;
+                try {
+                    masked = descend(element, path, depth + 1, trail);
+                } finally {
+                    path.reset(mark);
+                }
                 changed |= masked != element;
                 Array.set(copy, i, Coercion.toDeclaredType(masked, component));
             }
             return changed ? copy : array;
         } finally {
-            inProgress.remove(array);
+            trail.remove(array);
         }
     }
 

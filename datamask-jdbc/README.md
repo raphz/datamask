@@ -200,6 +200,23 @@ failing on a stored value, a statement timeout — and in cursor mode that arriv
 Leaving result sets unwrapped would put a hole exactly in the path that reads data. The cost is one
 reflective dispatch per call, the same as p6spy or datasource-proxy.
 
+It is also the only cost here that scales with the size of a *result* rather than with the number of
+statements — a thousand rows of ten columns is ten thousand forwards — so it is the only part with an
+escape hatch:
+
+```java
+DataSource ds = new MaskingDataSource(pool, dataMask).withoutResultSetWrapping();
+// or, under Spring Boot: datamask.jdbc.wrap-result-sets: false
+```
+
+Connections, statements, bind parameters and metadata stay wrapped, so the unique-constraint
+violation this module was written for is still sanitised. What you give up is the fetch path: a
+timeout or a cast failure arriving from `next()` reaches the application exactly as the driver threw
+it, message and row value included. [`datamask-benchmarks`](../datamask-benchmarks/README.md)
+measures the proxy against an unwrapped result set so that this is a decision with a number behind
+it — take it because that measurement said something about your read path, not on the assumption that
+a proxy must be expensive.
+
 **So is `DatabaseMetaData`.** It is a way back out of the wrapper: `metaData.getConnection()` is
 specified to return the connection that produced it, and the driver's own object returns the driver's
 own connection — so every statement created through it, and every error those statements raise, would

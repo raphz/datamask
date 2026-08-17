@@ -128,8 +128,18 @@ public record DataMaskProperties(
      *     instance, stops resolving once the bean is a MaskingDataSource. A pool named here goes
      *     back to quoting row values and bind parameters in its errors, so prefer injecting
      *     DataSource and unwrapping, which keeps the masking. Each exclusion is logged at startup.
+     * @param wrapResultSets Whether result sets are proxied along with connections and statements,
+     *     which they are by default. Off, a database error that surfaces during a fetch rather than
+     *     at execution — a statement timeout or a cast failing on a stored value, which in cursor
+     *     mode arrive from next() — reaches the application as the driver threw it, message and all.
+     *     What it saves is one reflective forward per call on the path whose cost scales with the
+     *     size of the result. Turn it off on the strength of a measurement of your own read path;
+     *     datamask-benchmarks measures the proxy so that number exists.
      */
-    public record Jdbc(@DefaultValue("true") boolean enabled, List<String> excludedBeans) {
+    public record Jdbc(
+            @DefaultValue("true") boolean enabled,
+            List<String> excludedBeans,
+            @DefaultValue("true") boolean wrapResultSets) {
 
         public Jdbc {
             excludedBeans = excludedBeans == null ? List.of() : List.copyOf(excludedBeans);

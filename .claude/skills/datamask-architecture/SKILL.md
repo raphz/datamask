@@ -113,12 +113,27 @@ scoping (a shared node in a DAG is not a cycle). The two halves differ on purpos
   it a self-referential list unrolled to `maxDepth`, and one referencing itself twice unrolled
   exponentially and took the caller down with it.
 
+The identity map is created **on entry to the first structure**, not per call to `mask`, and the
+methods that walk one take it as `@Nullable`. A cycle can only run through the chain of structures
+currently being walked, so masking a string or a number — which is most of what an integration hands
+over — allocates nothing at all. `mask(value, path)` short-circuits a leaf before it builds anything.
+
 Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded by `maxCollectionElements`;
 the tail is dropped, which discloses nothing. A copy that refuses a masked element — `ArrayDeque` and
 a naturally ordered `TreeSet` reject null, `ConcurrentHashMap` rejects it on both sides — drops that
 element rather than failing the enclosing object. Map keys are masked when `maskMapKeys` is on, which
 `strict()` enables and `relaxed()` does not; map *paths* are positional (`{0}`, `{0}{key}`), never
 the key itself, because paths reach observers and exception messages.
+
+**Paths are a buffer, not a string.** `WalkPath` (package-private, `application`) holds one
+`StringBuilder` that is pushed before descending into a member and reset after, and it becomes a
+`String` only where one is consumed: masking a value, reporting a finding, reporting a failure. The
+engine used to concatenate a path per member whether or not anything ever read it, which on a graph
+with no PII in it was the largest source of allocation in the walk. **Every push must be paired with
+a reset in a `finally`**: a structural failure is caught mid-walk and the parent carries on with its
+next member, so an unpaired push misattributes every path after it — an observer signal naming a
+field that had nothing to do with the event, which is worse than no signal. `WalkPathTest` asserts
+exact path sequences across containers, maps and a caught failure for exactly that reason.
 
 **Container shape is preserved, because it has to be.** `newCollectionLike` maps `SortedSet`→`TreeSet`,
 `Set`→`LinkedHashSet`, `List`→`ArrayList`, `Deque`/`Queue`→`ArrayDeque` (`List` is tested first —
@@ -178,6 +193,14 @@ listed first for that reason.
 
 `sanitize()` returns the same `String` instance when nothing matched, which preserves the engine's
 no-change short-circuit.
+
+Two bounds sit in front of the detectors, both added because the scan dominated every measurement of
+this library. Each detector declares a **gate** — `PiiDetector.mightMatch(TextSignals)`, attached
+with `RegexDetector.gatedBy` — a necessary condition checked once against a one-pass summary, so a
+pattern that cannot match never runs. And the text itself is capped at `MaskingPolicy.maxTextLength`,
+with the remainder redacted and `onTextTruncated` reported. Read the gate rules in
+`datamask-invariants` before writing one: it is the one construct here that can be wrong with no
+symptom at all.
 
 ## Extension points
 
@@ -263,15 +286,25 @@ Optional<PiiCategory> classify(CharSequence text) // Some only when ONE detector
 `classify` is what an integration uses to decide what a whole value is — a bind parameter, a span
 attribute, a Kafka header. `sanitize` is for text with prose around the PII.
 
+Both `sanitize` methods stop at `MaskingPolicy.maxTextLength` and redact the rest, reporting
+`onTextTruncated`. `scan` deliberately does not: it is an audit call somebody made on purpose, and
+answering it about the first 8 KB of a document would be worse than answering it slowly. The
+constructor takes the policy for that reason — `TextSanitizer(detectors, maskers, contexts, observer,
+policy)`.
+
 ### Domain types
 
 ```java
 record MaskingPolicy(Sensitivity threshold, FailureMode failureMode, String redactionPlaceholder,
-                     int maxDepth, int maxCollectionElements,
+                     int maxDepth, int maxCollectionElements, int maxTextLength,
                      boolean scanUnannotatedText, boolean maskMapKeys)
-    static strict() / relaxed(); applies(Sensitivity);
+    static strict() / relaxed(); applies(Sensitivity); DEFAULT_MAX_TEXT_LENGTH = 8192
     complete wither set: withThreshold / withFailureMode / withScanUnannotatedText /
-    withRedactionPlaceholder / withMaskMapKeys / withMaxDepth / withMaxCollectionElements
+    withRedactionPlaceholder / withMaskMapKeys / withMaxDepth / withMaxCollectionElements /
+    withMaxTextLength
+    // there is a seven-argument constructor without maxTextLength, for call sites written before
+    // it existed. Use a wither instead: the withers all go through the canonical constructor, and
+    // the short one silently resets the cap to its default.
 
 record PiiDescriptor(PiiCategory category, Sensitivity sensitivity, MaskStrategy strategy,
                      int keep, char padding, String replacement,
@@ -297,7 +330,17 @@ sealed interface MaskAction { Mask(PiiDescriptor) | Descend() | Keep() | Drop() 
 
 class MaskingException  // final; build with atPath(path, message[, cause]) / withoutPath(message)
 
-interface PiiDetector      { String name(); List<PiiFinding> detect(CharSequence); }   // NOT functional
+interface PiiDetector      { String name(); List<PiiFinding> detect(CharSequence);
+                             default boolean mightMatch(TextSignals) { return true; } }  // NOT functional
+    // mightMatch is the pre-filter: a cheap necessary condition, checked once per text, that keeps
+    // a pattern from running where it provably cannot match. RegexDetector.gatedBy(Predicate)
+    // attaches one. Answer true when unsure — a wrong false is a value that is never masked.
+
+final class TextSignals    // one-pass summary of a text, the argument to mightMatch
+    static of(CharSequence); length(); digits(); uppercaseLetters(); longestUppercaseRun();
+    contains(char); containsAll(String); containsAny(String)
+    // ASCII only, and a character it does not track is reported PRESENT — unknown means run the
+    // detector. Every built-in pattern is written in explicit ASCII classes, so this answers exactly.
 interface Pseudonymizer    { String pseudonymize(String); }
 interface TokenVault       { String tokenize(String, PiiCategory); Optional<String> detokenize(String); }
 interface MaskContextFactory { MaskContext create(PiiDescriptor, MaskStrategy, String path, Class<?>); }
@@ -317,6 +360,7 @@ is the default.
 | `onFailure(path, Throwable)` | masking failed and the `FailureMode` was applied |
 | `onDepthLimitExceeded(path)` | the graph was deeper than `maxDepth` |
 | `onCollectionTruncated(path, int kept)` | a collection or map was cut at `maxCollectionElements` |
+| `onTextTruncated(path, int scanned)` | a string was longer than `maxTextLength`; the tail was redacted unread |
 
 The first pair and the last pair each used to be one method. Merging them is what made the alerting
 signal unusable: an annotated free-text field produces detector hits on every request, and a

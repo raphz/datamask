@@ -196,7 +196,12 @@ class ModuleDependencyTest {
                         ROOT + ".log4j2..",
                         "ch.qos.logback..",
                         "org.slf4j..",
-                        "org.apache.logging.log4j.."));
+                        "org.apache.logging.log4j..",
+                        // The JDBC wrapper, whose result-set proxy is measured against an unwrapped
+                        // result set. java.sql is already in the JDK baseline; what this adds is the
+                        // module. The measurement is the reason MaskingDataSource has an escape
+                        // hatch at all, so the two belong in the same build.
+                        ROOT + ".jdbc.."));
         onlyDependOn(List.of(BENCHMARKS), allowed);
     }
 

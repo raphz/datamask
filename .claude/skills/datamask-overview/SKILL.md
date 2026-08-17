@@ -117,10 +117,12 @@ the framework builds by class name (`LogbackDataMaskInstaller`, `KafkaDataMaskIn
 The benchmark module was deferred until an integration put the engine on a logging hot path; logback
 and log4j2 did, so **`datamask-benchmarks` now exists** and the deferral is over. Its headline is a
 clean `INFO` line through the masking appender against the same event through a plain one, and its
-first result is worth knowing before touching anything on that path: a clean line costs ~11 µs, and
-~98% of that is the unfiltered regex fan-out in `TextSanitizer`, not the engine. See
-`datamask-benchmarks/README.md`; a performance change to the core or to a logging module should come
-with a before/after from it.
+first result is worth knowing before touching anything on that path: a clean line cost ~11 µs, and
+~98% of that was the unfiltered regex fan-out in `TextSanitizer`, not the engine. **Gating the
+detectors took that to ~0.55 µs** (~3.4 µs on a log line with digits and colons in it, which is the
+figure to quote for real text). See `datamask-benchmarks/README.md`; a performance change to the core
+or to a logging module should come with a before/after from it, and `docs/IMPROVEMENTS.md` holds the
+baseline table both columns live in.
 
 Two things the implemented integrations established that the remaining ones should copy: an
 integration takes a `MaskingEngine` (with a `DataMask` convenience constructor), and it returns the

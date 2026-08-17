@@ -24,7 +24,11 @@ import java.sql.Statement;
  * <p>Result sets are proxied too, which is the one place the cost is worth stating plainly: an
  * error can surface during a fetch rather than at execution — a cast failing on a stored value, a
  * statement timeout — and in cursor mode that means it arrives from {@code next()}. Leaving result
- * sets unwrapped would put a hole exactly in the path that reads data.
+ * sets unwrapped would put a hole exactly in the path that reads data. It is also the only part of
+ * this wrapper whose cost scales with the size of the result rather than with the number of
+ * statements, which is why it is the one part that can be turned off — see
+ * {@link MaskingDataSource#withoutResultSetWrapping()}, and the measured figures behind it in
+ * {@code datamask-benchmarks}.
  */
 final class JdbcProxies {
 
@@ -139,7 +143,7 @@ final class JdbcProxies {
 
         @Override
         Object adapt(Object proxy, Method method, Object[] args, Object result) {
-            if (result instanceof ResultSet resultSet) {
+            if (result instanceof ResultSet resultSet && masking.wrapsResultSets()) {
                 return proxy(ResultSet.class, new ResultSetHandler(resultSet, masking, null));
             }
             return result instanceof Connection && connectionProxy != null ? connectionProxy : result;
@@ -198,7 +202,7 @@ final class JdbcProxies {
 
         @Override
         Object adapt(Object proxy, Method method, Object[] args, Object result) {
-            if (result instanceof ResultSet resultSet) {
+            if (result instanceof ResultSet resultSet && masking.wrapsResultSets()) {
                 return Proxy.newProxyInstance(
                         JdbcProxies.class.getClassLoader(),
                         new Class<?>[] {ResultSet.class},
