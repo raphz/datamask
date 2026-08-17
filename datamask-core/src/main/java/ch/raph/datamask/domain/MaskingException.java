@@ -1,5 +1,7 @@
 package ch.raph.datamask.domain;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Raised when masking cannot be completed and the policy is {@link FailureMode#THROW}.
  *
@@ -16,7 +18,7 @@ public final class MaskingException extends RuntimeException {
 
     private final String path;
 
-    private MaskingException(String path, String message, Throwable cause) {
+    private MaskingException(String path, String message, @Nullable Throwable cause) {
         super(message, cause);
         this.path = path;
     }
@@ -26,7 +28,7 @@ public final class MaskingException extends RuntimeException {
         return atPath(path, message, null);
     }
 
-    public static MaskingException atPath(String path, String message, Throwable cause) {
+    public static MaskingException atPath(String path, String message, @Nullable Throwable cause) {
         return new MaskingException(path, "masking failed at '" + path + "': " + message, cause);
     }
 

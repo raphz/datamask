@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Masks the PII inside free-form text while leaving the surrounding prose readable.
@@ -51,7 +52,7 @@ public final class TextSanitizer {
      *
      * <p>{@code null} in, {@code null} out.
      */
-    public String sanitize(CharSequence text, String path) {
+    public @Nullable String sanitize(@Nullable CharSequence text, String path) {
         return sanitize(text, path, false);
     }
 
@@ -61,11 +62,11 @@ public final class TextSanitizer {
      * scanner doing its declared job is not the same event as PII turning up where nobody expected
      * it, and reporting both as the latter is what makes an alert on it unusable.
      */
-    public String sanitizeDeclared(CharSequence text, String path) {
+    public @Nullable String sanitizeDeclared(@Nullable CharSequence text, String path) {
         return sanitize(text, path, true);
     }
 
-    private String sanitize(CharSequence text, String path, boolean declared) {
+    private @Nullable String sanitize(@Nullable CharSequence text, String path, boolean declared) {
         if (text == null || text.isEmpty() || detectors.isEmpty()) {
             return text == null ? null : text.toString();
         }
@@ -103,7 +104,7 @@ public final class TextSanitizer {
      * <p>Null or empty text has no findings, rather than being a way to get a {@code
      * NullPointerException} out of an auditing call.
      */
-    public List<PiiFinding> scan(CharSequence text) {
+    public List<PiiFinding> scan(@Nullable CharSequence text) {
         if (text == null || text.isEmpty()) {
             return List.of();
         }
@@ -134,7 +135,7 @@ public final class TextSanitizer {
      * What the whole value is, when a single detector matches it end to end. Used to resolve
      * {@link MaskStrategy#AUTO} from a value's own content when nothing else declared it.
      */
-    public Optional<PiiCategory> classify(CharSequence text) {
+    public Optional<PiiCategory> classify(@Nullable CharSequence text) {
         if (text == null || text.isEmpty()) {
             return Optional.empty();
         }

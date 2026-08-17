@@ -2,6 +2,7 @@ package ch.raph.datamask.kafka;
 
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.application.MaskingEngine;
+import ch.raph.datamask.application.ResolvedMasker;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -69,9 +70,9 @@ public final class MaskingSerializer<T> implements Serializer<T> {
     // Headers are the interceptor's job, and which of the two serializer slots this was configured
     // into is what decides whether keys are masked, so neither of RecordMasker's settings is read
     // from the configuration here.
-    private static final MaskerSource INSTALLED = MaskerSource.installed(false, Set.of());
+    private static final ResolvedMasker<RecordMasker> INSTALLED = DataMaskKafka.resolving(false, Set.of());
 
-    private final MaskerSource source;
+    private final ResolvedMasker<RecordMasker> source;
 
     // Not final because Kafka builds this class by name through its no-argument constructor and hands
     // it the delegate in configure. Volatile because configure runs on the thread that constructs the
@@ -96,7 +97,7 @@ public final class MaskingSerializer<T> implements Serializer<T> {
 
     public MaskingSerializer(Serializer<T> delegate, MaskingEngine engine) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.source = MaskerSource.of(new RecordMasker(engine));
+        this.source = ResolvedMasker.of(new RecordMasker(engine));
     }
 
     @Override

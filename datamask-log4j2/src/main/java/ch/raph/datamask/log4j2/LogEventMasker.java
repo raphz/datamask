@@ -61,11 +61,44 @@ import org.apache.logging.log4j.util.StringMap;
  * <em>same instance</em> when nothing was masked, so this class compares references and forwards the
  * original event. A PII-free log line pays only for the scan itself.
  *
+ * <h2>What the observer is told, and where</h2>
+ *
+ * Every path this module reports follows the grammar the integrations share,
+ * {@code <module>:<site>[/<detail>]}, so a rule downstream can tell a log4j2 finding from a JDBC or a
+ * Kafka one by its scheme alone. The site is the logger; the detail says where in the event the value
+ * was.
+ *
+ * <table border="1">
+ *   <caption>The sites of a log event</caption>
+ *   <tr><th>Path</th><th>What it names</th></tr>
+ *   <tr><td>{@code log4j2:<logger>/event}</td><td>Masking the event as a whole failed</td></tr>
+ *   <tr><td>{@code log4j2:<logger>/message}</td><td>The message, its format, or the object one carries</td></tr>
+ *   <tr><td>{@code log4j2:<logger>/message/<key>}</td><td>One entry of a map message</td></tr>
+ *   <tr><td>{@code log4j2:<logger>/arg<n>}</td><td>The n-th parameter of the logging call</td></tr>
+ *   <tr><td>{@code log4j2:<logger>/mdc/<key>}</td><td>One entry of the thread context map</td></tr>
+ *   <tr><td>{@code log4j2:<logger>/throwable}</td><td>The thrown exception, then {@code /cause} and
+ *       {@code /suppressed/<n>} down its graph</td></tr>
+ * </table>
+ *
+ * <p>The engine appends object-graph members with a dot, so a declared field of a logged object is
+ * reported at {@code log4j2:com.acme.Payments/arg0.iban} — the site says the value came out of a log
+ * parameter, the tail says which field of it.
+ *
+ * <p>Free text found here was found in a value nobody declared as anything, so every detector hit
+ * reaches {@code onUnannotatedPii} rather than {@code onScanned}: a message, a context value or an
+ * exception message carrying PII is a field leaking, not a scanner doing a job it was asked to do.
+ *
  * <p>Thread-safe, and never throws: a masking failure is reported to the {@link MaskingObserver} and
  * yields an event with the message withheld. A logging call must not fail the business operation, and
  * must not fall back to the text it could not mask.
  */
 public final class LogEventMasker {
+
+    /** The scheme of every path this module reports; see the class javadoc for the sites under it. */
+    private static final String SCHEME = "log4j2:";
+
+    /** Log4j2's root logger is named with the empty string, which would leave the site of a path blank. */
+    private static final String ROOT_LOGGER = "<root>";
 
     private final MaskingEngine engine;
     private final MaskingObserver observer;
@@ -95,7 +128,7 @@ public final class LogEventMasker {
             // Includes the MaskingException that FailureMode.THROW raises. Aborting a database write
             // on a bad value is right; aborting a log statement is not, so the message is withheld
             // instead — withheld, not passed through.
-            observer.onFailure(event.getLoggerName(), failure);
+            observer.onFailure(origin(event) + "/event", failure);
             return withheld(event);
         }
     }
@@ -108,24 +141,31 @@ public final class LogEventMasker {
      * convenient one.
      */
     public String maskFormattedMessage(LogEvent event) {
+        String origin = origin(event);
         try {
             Message message = event.getMessage();
             if (message == null) {
                 return "";
             }
             Throwable thrown = event.getThrown();
-            return maskMessage(message, thrown, thrown, event.getLoggerName()).getFormattedMessage();
+            return maskMessage(message, thrown, thrown, origin).getFormattedMessage();
         } catch (Throwable failure) {
-            observer.onFailure(event.getLoggerName(), failure);
+            observer.onFailure(origin + "/message", failure);
             return engine.policy().redactionPlaceholder();
         }
     }
 
+    /** The scheme and the site every path of this event hangs off. */
+    private static String origin(LogEvent event) {
+        String logger = event.getLoggerName();
+        return SCHEME + (logger == null || logger.isEmpty() ? ROOT_LOGGER : logger);
+    }
+
     private LogEvent maskEvent(LogEvent event) {
-        String origin = event.getLoggerName();
+        String origin = origin(event);
 
         Throwable thrown = event.getThrown();
-        Throwable maskedThrown = maskThrown(thrown, origin + ".exception", 0);
+        Throwable maskedThrown = maskThrown(thrown, origin + "/throwable", 0);
 
         Message message = event.getMessage();
         Message maskedMessage = maskMessage(message, thrown, maskedThrown, origin);
@@ -175,7 +215,7 @@ public final class LogEventMasker {
         // every case log4j2 produces. Masking it twice would build two copies of the same chain.
         Throwable messageThrown = message.getThrowable();
         Throwable maskedMessageThrown =
-                messageThrown == thrown ? maskedThrown : maskThrown(messageThrown, origin + ".exception", 0);
+                messageThrown == thrown ? maskedThrown : maskThrown(messageThrown, origin + "/throwable", 0);
         boolean throwableChanged = maskedMessageThrown != messageThrown;
 
         if (message instanceof ParameterizedMessage parameterized) {
@@ -187,7 +227,7 @@ public final class LogEventMasker {
             // format-and-parameters view of this type would scan the object's text instead of masking
             // its declarations.
             Object parameter = reusableObject.getParameter();
-            Object masked = maskArgument(parameter, origin + ".message");
+            Object masked = maskArgument(parameter, origin + "/message");
             return masked == parameter ? message : new ObjectMessage(masked);
         }
         if (message instanceof ReusableMessage reusable) {
@@ -195,7 +235,7 @@ public final class LogEventMasker {
         }
         if (message instanceof ObjectMessage object) {
             Object parameter = object.getParameter();
-            Object masked = maskArgument(parameter, origin + ".message");
+            Object masked = maskArgument(parameter, origin + "/message");
             return masked == parameter ? message : new ObjectMessage(masked);
         }
         if (message instanceof MapMessage<?, ?> map) {
@@ -211,7 +251,7 @@ public final class LogEventMasker {
     private Message maskParameterized(
             ParameterizedMessage message, Throwable maskedThrown, boolean throwableChanged, String origin) {
         String format = message.getFormat();
-        String maskedFormat = scan(format, origin + ".message");
+        String maskedFormat = scan(format, origin + "/message");
         Object[] parameters = message.getParameters();
         Object[] maskedParameters = maskArguments(parameters, origin);
 
@@ -242,7 +282,7 @@ public final class LogEventMasker {
             // A reusable simple message over a non-String CharSequence: its text is all it has.
             return maskFormatted(message, throwableChanged, origin);
         }
-        String maskedFormat = scan(format, origin + ".message");
+        String maskedFormat = scan(format, origin + "/message");
         Object[] parameters = detachedParameters(message);
         Object[] maskedParameters = maskArguments(parameters, origin);
 
@@ -274,7 +314,7 @@ public final class LogEventMasker {
         Map<String, Object> masked = null;
         for (Map.Entry<String, Object> entry : data.entrySet()) {
             Object value = entry.getValue();
-            Object safe = maskArgument(value, origin + ".message." + entry.getKey());
+            Object safe = maskArgument(value, origin + "/message/" + entry.getKey());
             if (safe != value && masked == null) {
                 masked = new LinkedHashMap<>(data);
             }
@@ -290,8 +330,8 @@ public final class LogEventMasker {
         } catch (RuntimeException unsupported) {
             // A subclass that will not take these values back — masking may have produced a type its
             // own map does not hold. The text still goes out masked; only the structure is lost.
-            observer.onFailure(origin + ".message", unsupported);
-            return new SimpleMessage(scan(message.getFormattedMessage(), origin + ".message"));
+            observer.onFailure(origin + "/message", unsupported);
+            return new SimpleMessage(scan(message.getFormattedMessage(), origin + "/message"));
         }
     }
 
@@ -302,7 +342,7 @@ public final class LogEventMasker {
      */
     private Message maskFormatted(Message message, boolean throwableChanged, String origin) {
         String formatted = message.getFormattedMessage();
-        String masked = scan(formatted, origin + ".message");
+        String masked = scan(formatted, origin + "/message");
         if (masked == formatted && !throwableChanged) {
             return message;
         }
@@ -316,7 +356,7 @@ public final class LogEventMasker {
         Object[] masked = null;
         for (int i = 0; i < parameters.length; i++) {
             Object parameter = parameters[i];
-            Object safe = maskArgument(parameter, origin + ".arg" + i);
+            Object safe = maskArgument(parameter, origin + "/arg" + i);
             if (safe != parameter && masked == null) {
                 masked = parameters.clone();
             }
@@ -342,12 +382,15 @@ public final class LogEventMasker {
         if (argument instanceof CharSequence text) {
             // Scanned here rather than through the engine, which would report the finding against a
             // path of its own choosing. Where in the event a value was found is the whole point of the
-            // signal: "context.customer" names the code that set it, an empty path names nothing.
+            // signal: "log4j2:…/mdc/customer" names the code that set it, an empty path names nothing.
             String rendered = text.toString();
             String safe = scan(rendered, path);
             return safe == rendered ? argument : safe;
         }
-        return engine.mask(argument);
+        // The site goes in as the root of the graph, so the engine's own member paths hang off it:
+        // an @PII field of a logged object is reported at "log4j2:<logger>/arg0.iban" rather than at
+        // "Customer.iban", which names a class but not the log line it escaped through.
+        return engine.mask(argument, path);
     }
 
     /**
@@ -365,7 +408,7 @@ public final class LogEventMasker {
             for (int i = 0; i < indexed.size(); i++) {
                 String key = indexed.getKeyAt(i);
                 Object value = indexed.getValueAt(i);
-                Object safe = maskArgument(value, origin + ".context." + key);
+                Object safe = maskArgument(value, origin + "/mdc/" + key);
                 if (safe != value && masked == null) {
                     masked = ContextDataFactory.createContextData(contextData);
                 }
@@ -383,7 +426,7 @@ public final class LogEventMasker {
         StringMap masked = null;
         for (Map.Entry<String, String> entry : contextData.toMap().entrySet()) {
             String value = entry.getValue();
-            Object safe = maskArgument(value, origin + ".context." + entry.getKey());
+            Object safe = maskArgument(value, origin + "/mdc/" + entry.getKey());
             if (safe != value && masked == null) {
                 masked = ContextDataFactory.createContextData(contextData);
             }
@@ -406,8 +449,10 @@ public final class LogEventMasker {
             return thrown;
         }
         if (depth > engine.policy().maxDepth()) {
-            // Bounded like the engine's own traversal. Cutting the chain short discloses nothing;
-            // following an unbounded one would turn a log statement into an outage.
+            // Genuinely the depth signal and not the truncation one: this counts nesting through the
+            // cause chain and the suppressed lists hanging off it, against maxDepth, exactly as the
+            // engine's own traversal does. Cutting the chain short discloses nothing; following an
+            // unbounded one would turn a log statement into an outage.
             observer.onDepthLimitExceeded(path);
             return null;
         }
@@ -415,7 +460,7 @@ public final class LogEventMasker {
         String message = thrown.getMessage();
         String maskedMessage = scan(message, path);
         Throwable cause = thrown.getCause();
-        Throwable maskedCause = maskThrown(cause, path + ".cause", depth + 1);
+        Throwable maskedCause = maskThrown(cause, path + "/cause", depth + 1);
         Throwable[] suppressed = thrown.getSuppressed();
         Throwable[] maskedSuppressed = maskSuppressed(suppressed, path, depth);
 
@@ -425,13 +470,29 @@ public final class LogEventMasker {
         return MaskedThrowables.copyOf(thrown, maskedMessage, maskedCause, maskedSuppressed);
     }
 
+    /**
+     * The suppressed list is a container, and it is bounded like every container the engine walks. A
+     * batch that fails item by item suppresses one exception per item, each with a cause chain and a
+     * stack trace of its own, and walking all of them is how a log statement becomes the outage. The
+     * tail is dropped, which discloses nothing.
+     *
+     * <p>Reported through {@code onCollectionTruncated} rather than {@code onDepthLimitExceeded}: a
+     * size limit and a depth limit say different things about the data and want different responses.
+     * The path is the list's, with the number of elements kept — not one signal per dropped element
+     * under a synthesised index, which nothing downstream could group.
+     */
     private Throwable[] maskSuppressed(Throwable[] suppressed, String path, int depth) {
         if (suppressed == null || suppressed.length == 0) {
             return suppressed;
         }
+        int kept = Math.min(suppressed.length, engine.policy().maxCollectionElements());
         Throwable[] masked = null;
-        for (int i = 0; i < suppressed.length; i++) {
-            Throwable safe = maskThrown(suppressed[i], path + ".suppressed" + i, depth + 1);
+        if (kept < suppressed.length) {
+            observer.onCollectionTruncated(path + "/suppressed", kept);
+            masked = Arrays.copyOf(suppressed, kept);
+        }
+        for (int i = 0; i < kept; i++) {
+            Throwable safe = maskThrown(suppressed[i], path + "/suppressed/" + i, depth + 1);
             if (safe != suppressed[i] && masked == null) {
                 masked = suppressed.clone();
             }

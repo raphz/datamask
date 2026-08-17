@@ -43,6 +43,9 @@ class LogEventMaskerTest {
     private static final String CARD = "4111111111111111";
     private static final String LOGGER = "ch.example.PaymentService";
 
+    /** The scheme and site every path this module reports hangs off: {@code <module>:<site>[/<detail>]}. */
+    private static final String ORIGIN = "log4j2:" + LOGGER;
+
     private final LogEventMasker masker =
             new LogEventMasker(DataMask.builder().secret(SECRET).build());
 
@@ -304,7 +307,7 @@ class LogEventMaskerTest {
 
             observedBy(recorder).mask(message(reusable("crediting {} and {}", "PMT-1", IBAN)));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".arg1:IBAN");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/arg1:IBAN");
         }
 
         @Test
@@ -512,7 +515,7 @@ class LogEventMaskerTest {
 
             observedBy(recorder).mask(simple("payment from " + IBAN));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".message:IBAN");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/message:IBAN");
         }
 
         @Test
@@ -522,7 +525,7 @@ class LogEventMaskerTest {
 
             observedBy(recorder).mask(withContext(Map.of("customer", EMAIL)));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".context.customer:EMAIL");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/mdc/customer:EMAIL");
         }
 
         @Test
@@ -532,7 +535,7 @@ class LogEventMaskerTest {
 
             observedBy(recorder).mask(event("crediting {} and {}", "PMT-1", IBAN));
 
-            assertThat(recorder.undeclared).containsExactly(LOGGER + ".arg1:IBAN");
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/arg1:IBAN");
         }
 
         @Test
@@ -542,7 +545,169 @@ class LogEventMaskerTest {
 
             observedBy(recorder).mask(event("customer {}", customer()));
 
-            assertThat(recorder.masked).contains("Customer.iban:IBAN:IBAN");
+            assertThat(recorder.masked).contains(ORIGIN + "/arg0.iban:IBAN:IBAN");
+        }
+
+        @Test
+        @DisplayName("names the entry of a map message a detector hit was found in")
+        void reportsUndeclaredPiiInAMapMessage() {
+            Recorder recorder = new Recorder();
+
+            observedBy(recorder).mask(message(new StringMapMessage(Map.of("account", IBAN))));
+
+            assertThat(recorder.undeclared).containsExactly(ORIGIN + "/message/account:IBAN");
+        }
+
+        @Test
+        @DisplayName("names the thrown exception, its cause and its suppressed entries separately")
+        void reportsUndeclaredPiiDownTheThrowableGraph() {
+            Recorder recorder = new Recorder();
+            RuntimeException failure = new RuntimeException(
+                    "commit of " + IBAN + " failed",
+                    new IllegalStateException("Key (email)=(" + EMAIL + ") already exists"));
+            failure.addSuppressed(new IllegalStateException("rollback of " + IBAN + " failed"));
+
+            observedBy(recorder).mask(thrown(failure));
+
+            assertThat(recorder.undeclared)
+                    .containsExactlyInAnyOrder(
+                            ORIGIN + "/throwable:IBAN",
+                            ORIGIN + "/throwable/cause:EMAIL",
+                            ORIGIN + "/throwable/suppressed/0:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports a failure against a scheme-prefixed path too, so a SIEM rule keys on one grammar")
+        void reportsFailuresUnderTheSameScheme() {
+            Recorder recorder = new Recorder();
+            DataMask throwing = DataMask.builder()
+                    .secret(SECRET)
+                    .observer(recorder)
+                    .policy(MaskingPolicy.strict().withFailureMode(FailureMode.THROW))
+                    .build();
+
+            new LogEventMasker(throwing).mask(event("checking {}", new Banking.Fragile(IBAN)));
+
+            assertThat(recorder.failures)
+                    .isNotEmpty()
+                    .allSatisfy(path -> assertThat(path).startsWith(ORIGIN + "/"));
+        }
+
+        @Test
+        @DisplayName("prefixes every path it reports with the module scheme, whichever site the value came from")
+        void everyPathCarriesTheScheme() {
+            Recorder recorder = new Recorder();
+            LogEvent event = new Log4jLogEvent.Builder()
+                    .setLoggerName(LOGGER)
+                    .setLevel(Level.ERROR)
+                    .setMessage(new ParameterizedMessage("customer {} from " + EMAIL, new Object[] {customer(), IBAN}))
+                    .setContextData(ContextDataFactory.createContextData(Map.of("customer", EMAIL)))
+                    .setThrown(new IllegalStateException("Key (iban)=(" + IBAN + ")"))
+                    .build();
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.everything())
+                    .isNotEmpty()
+                    .allSatisfy(path -> assertThat(path).startsWith("log4j2:"));
+        }
+
+        @Test
+        @DisplayName("names the root logger rather than leaving the site of the path empty")
+        void namesTheRootLogger() {
+            Recorder recorder = new Recorder();
+            LogEvent event = new Log4jLogEvent.Builder()
+                    .setLoggerName("")
+                    .setLevel(Level.INFO)
+                    .setMessage(new SimpleMessage("payment from " + IBAN))
+                    .build();
+
+            observedBy(recorder).mask(event);
+
+            assertThat(recorder.undeclared).containsExactly("log4j2:<root>/message:IBAN");
+        }
+    }
+
+    @Nested
+    @DisplayName("Bounded traversal of an exception graph")
+    class Bounds {
+
+        @Test
+        @DisplayName("cuts a cause chain deeper than the policy allows and reports it as a depth limit")
+        void reportsTheDepthLimitOfACauseChain() {
+            Recorder recorder = new Recorder();
+            Throwable deepest = new IllegalStateException("Key (iban)=(" + IBAN + ")");
+            Throwable failure = new RuntimeException("outer", new RuntimeException("inner", deepest));
+
+            boundedBy(MaskingPolicy.strict().withMaxDepth(1), recorder).mask(thrown(failure));
+
+            assertThat(recorder.depthLimits).containsExactly(ORIGIN + "/throwable/cause/cause");
+            assertThat(recorder.truncations).isEmpty();
+        }
+
+        @Test
+        @DisplayName("keeps nothing of a cause below the depth limit, which is the fail-closed direction")
+        void dropsTheCauseBelowTheDepthLimit() {
+            Throwable deepest = new IllegalStateException("Key (iban)=(" + IBAN + ")");
+            Throwable failure = new RuntimeException("outer", new RuntimeException("inner", deepest));
+
+            LogEvent masked = boundedBy(MaskingPolicy.strict().withMaxDepth(1), new Recorder())
+                    .mask(thrown(failure));
+
+            assertThat(masked.getThrown().getCause().getCause()).isNull();
+            assertThat(render("%xEx", masked)).doesNotContain(IBAN);
+        }
+
+        @Test
+        @DisplayName("cuts a suppressed list longer than the policy allows and reports the list, not each element")
+        void reportsTheSuppressedListAsATruncation() {
+            Recorder recorder = new Recorder();
+            RuntimeException failure = new RuntimeException("batch failed");
+            for (int i = 0; i < 5; i++) {
+                failure.addSuppressed(new IllegalStateException("item " + i + " of " + IBAN + " failed"));
+            }
+
+            boundedBy(MaskingPolicy.strict().withMaxCollectionElements(2), recorder)
+                    .mask(thrown(failure));
+
+            assertThat(recorder.truncations).containsExactly(ORIGIN + "/throwable/suppressed:2");
+            assertThat(recorder.depthLimits).isEmpty();
+        }
+
+        @Test
+        @DisplayName("drops the tail of the suppressed list rather than following it, which discloses nothing")
+        void dropsTheTailOfTheSuppressedList() {
+            RuntimeException failure = new RuntimeException("batch failed");
+            for (int i = 0; i < 5; i++) {
+                failure.addSuppressed(new IllegalStateException("item " + i + " of " + IBAN + " failed"));
+            }
+
+            LogEvent masked = boundedBy(MaskingPolicy.strict().withMaxCollectionElements(2), new Recorder())
+                    .mask(thrown(failure));
+
+            assertThat(masked.getThrown().getSuppressed()).hasSize(2);
+            assertThat(render("%xEx", masked)).doesNotContain(IBAN);
+        }
+
+        @Test
+        @DisplayName("leaves a suppressed list within the bound alone, reporting no truncation at all")
+        void keepsASuppressedListWithinTheBound() {
+            Recorder recorder = new Recorder();
+            RuntimeException failure = new RuntimeException("commit failed");
+            failure.addSuppressed(new IllegalStateException("rollback of " + IBAN + " failed"));
+
+            LogEvent masked = boundedBy(MaskingPolicy.strict(), recorder).mask(thrown(failure));
+
+            assertThat(recorder.truncations).isEmpty();
+            assertThat(masked.getThrown().getSuppressed()).hasSize(1);
+        }
+
+        private LogEventMasker boundedBy(MaskingPolicy policy, MaskingObserver observer) {
+            return new LogEventMasker(DataMask.builder()
+                    .secret(SECRET)
+                    .policy(policy)
+                    .observer(observer)
+                    .build());
         }
     }
 
@@ -733,7 +898,10 @@ class LogEventMaskerTest {
 
         private final List<String> masked = new ArrayList<>();
         private final List<String> undeclared = new ArrayList<>();
+        private final List<String> scanned = new ArrayList<>();
         private final List<String> failures = new ArrayList<>();
+        private final List<String> depthLimits = new ArrayList<>();
+        private final List<String> truncations = new ArrayList<>();
 
         @Override
         public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
@@ -746,8 +914,35 @@ class LogEventMaskerTest {
         }
 
         @Override
+        public void onScanned(String path, PiiCategory category, String detector) {
+            scanned.add(path + ":" + category);
+        }
+
+        @Override
         public void onFailure(String path, Throwable error) {
             failures.add(path);
+        }
+
+        @Override
+        public void onDepthLimitExceeded(String path) {
+            depthLimits.add(path);
+        }
+
+        @Override
+        public void onCollectionTruncated(String path, int kept) {
+            truncations.add(path + ":" + kept);
+        }
+
+        /** Every path reported, whichever signal carried it — for asserting the grammar as a whole. */
+        private List<String> everything() {
+            List<String> paths = new ArrayList<>();
+            paths.addAll(masked);
+            paths.addAll(undeclared);
+            paths.addAll(scanned);
+            paths.addAll(failures);
+            paths.addAll(depthLimits);
+            paths.addAll(truncations);
+            return paths;
         }
     }
 }

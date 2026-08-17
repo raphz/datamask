@@ -32,10 +32,41 @@ all of them are handled here.
 | **Exception messages** | Masked message down the cause chain and the suppressed list, frames untouched | `Key (email)=(john@x.com) already exists` is a constraint violation answering with the row that caused it |
 | **Markers** | Logstash appending markers rebuilt around masked payloads; see below | `Markers.append("customer", customer)` is written into the JSON by the encoder, whatever the message says |
 
-Every detector hit is reported to `MaskingObserver.onUnannotatedPii` with where in the event it was
-found — `…PaymentService.mdc.customer`, `…PaymentService.arg1`, `…PaymentService.marker.customer` —
-which is the earliest warning that a field has started carrying PII nobody classified, and enough to
-find the code that put it there.
+## The paths reported to the observer
+
+Every path this module hands a `MaskingObserver` follows the grammar every DataMask integration
+shares — `<module>:<site>[/<detail>]`. The scheme is the module name, so a SIEM rule keying on it can
+tell a leak in a log line from one in a Kafka record or a JDBC parameter without parsing the rest:
+
+| Site | Path | What it was |
+|---|---|---|
+| Message | `logback:com.acme.Payments/message` | the message template, scanned |
+| Argument | `logback:com.acme.Payments/arg0` | the first argument |
+| Field inside an argument | `logback:com.acme.Payments/arg0.iban` | a declared `@PII` member of it |
+| MDC | `logback:com.acme.Payments/mdc/customerId` | one MDC entry, named by its key |
+| Key-value pair | `logback:com.acme.Payments/kv/iban` | one pair from the fluent API |
+| Exception | `logback:com.acme.Payments/throwable` | the exception message |
+| Cause | `logback:com.acme.Payments/throwable/cause` | one level down the chain |
+| Suppressed | `logback:com.acme.Payments/throwable/suppressed/0` | one entry of the suppressed list |
+| Marker | `logback:com.acme.Payments/marker/customer` | a logstash appending marker, by field name |
+| Nested marker | `logback:com.acme.Payments/marker/AUDIT/customer` | one hanging off a filtering marker |
+| The event | `logback:com.acme.Payments/event` | reported only when masking the event failed |
+
+Everything this module names itself is a slash-separated detail; the dot in `arg0.iban` comes from the
+engine, which appends object-graph members that way. An argument is masked from that site rather than
+from its own type, so a finding inside a logged object traces back to the call that logged it rather
+than to a class name that appears in a hundred places.
+
+`MaskingObserver.onUnannotatedPii` is what a detector hit reports here — not `onScanned`. Nothing this
+module scans was declared as free text: a message, an MDC value and an exception message are all values
+that simply arrived, so a hit in one is a field carrying PII nobody classified, which is the earliest
+warning that a log line has started leaking and enough to find the code that put it there.
+
+Two limits report separately, because they want different responses. A cause chain or a marker
+reference graph that runs past `maxDepth` reports `onDepthLimitExceeded` with the path it stopped at —
+a modelling surprise. A suppressed list longer than `maxCollectionElements` is cut and reports
+`onCollectionTruncated("…/throwable/suppressed", kept)` against the container itself — a volume one,
+usually a try-with-resources in a loop. The dropped tail never reaches the appenders.
 
 ## Markers are part of the payload, not just a label
 
@@ -123,9 +154,17 @@ application has a container, a context or any beans, so an appender cannot be ha
 point. It looks instead, per event, for something installed since — which is why an instance installed
 after the first log line is still picked up.
 
-The fallback is safe rather than convenient: strict masking under an ephemeral key, reported through
-logback's own status manager. Everything is masked; what an ephemeral key costs is that a `HASH`
-pseudonym differs after a restart, which removes the reason to prefer it over `REDACT`.
+`DataMaskLogback` is a thin naming of the core's `InstalledDataMask`, and the appender resolves through
+the core's `ResolvedMasker` — the same hand-off the log4j2 and Kafka integrations use, so the caveat
+that a static field is shared only within the classloader that loaded it is documented once, on
+`InstalledDataMask`, rather than three times. `ResolvedMasker` is also what keys the resolution on the
+installed instance, which is what makes a late install take effect while keeping the fallback built
+once instead of per log line.
+
+The fallback is safe rather than convenient: strict masking under an ephemeral key, reported once
+through logback's own status manager — never through the logger being masked. Everything is masked;
+what an ephemeral key costs is that a `HASH` pseudonym differs after a restart, which removes the
+reason to prefer it over `REDACT`.
 
 ## Failing closed
 
@@ -137,11 +176,13 @@ no exception message, because the exception was raised while handling a value an
 
 ## Tests
 
-53 across the masker and the appender, all asserting the raw value is **absent** from what an encoder
+67 across the masker and the appender, all asserting the raw value is **absent** from what an encoder
 renders rather than only that the masked form is present. They cover the declared strategies, bare
 values a detector recognises, the MDC, key-value pairs, cause chains and suppressed exceptions, the
-same-instance short-circuit, the observer paths, the fail-closed paths, the rendering of the masked line
-against what logback itself renders for the same event (primitive and nested arrays, a self-referential
-one, the trailing-throwable rule), and markers — an appended object and an appended map asserted against
-real `LogstashEncoder` output, a logstash marker nested under a filtering one, a plain marker passing
+same-instance short-circuit, the observer paths site by site against the grammar above, the depth and
+truncation signals reported apart from one another, the fail-closed paths, the hand-off (a late
+install, a fallback built once rather than per event), the rendering of the masked line against what
+logback itself renders for the same event (primitive and nested arrays, a self-referential one, the
+trailing-throwable rule), and markers — an appended object and an appended map asserted against real
+`LogstashEncoder` output, a logstash marker nested under a filtering one, a plain marker passing
 through untouched, and an unknown marker type stripped to its name.

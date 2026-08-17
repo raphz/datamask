@@ -27,9 +27,11 @@ class AnnotationMergeTest {
 
     record KeepsTypeCategory(@PII(keep = 4) Email email) {}
 
-    record OverridesSensitivity(@PII(sensitivity = Sensitivity.LOW) Email email) {}
+    record OverridesSensitivity(
+            @PII(sensitivity = Sensitivity.LOW) Email email) {}
 
-    record OverridesStrategy(@PII(strategy = MaskStrategy.HASH) Email email) {}
+    record OverridesStrategy(
+            @PII(strategy = MaskStrategy.HASH) Email email) {}
 
     record Bare(@PII Email email) {}
 
@@ -43,7 +45,10 @@ class AnnotationMergeTest {
 
         // EMAIL masking keeps the domain shape readable. Losing the category would have masked the
         // address as an anonymous string — still safe, but no longer diagnosable in a log.
-        assertThat(masked.email().value()).doesNotContain("john.doe").contains("@").contains(".com");
+        assertThat(masked.email().value())
+                .doesNotContain("john.doe")
+                .contains("@")
+                .contains(".com");
     }
 
     @Test

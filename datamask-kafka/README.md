@@ -179,10 +179,19 @@ engine in. `DataMaskKafka.install(...)` is that hand-off, and it is looked up **
 built before the install still picks it up, from the next record on. The same install serves the
 consumer interceptor; there is one hand-off, not one per direction.
 
+The hand-off and the per-record resolution are the core's `InstalledDataMask` and `ResolvedMasker`,
+shared with the logging integrations rather than written again here — `DataMaskKafka` holds one holder
+and hands out a `ResolvedMasker<RecordMasker>` that captures the `datamask.mask.keys` and
+`datamask.headers.redact` settings the plugin read out of its client's configuration. `InstalledDataMask`
+is also where the caveat lives: a static field is shared by everything that shares its class, so in an
+application server where each deployment has its own classloader each installs its own, and where the
+library sits on a common classpath they share one and the last install wins.
+
 Until something is installed, masking runs under strict defaults and an ephemeral key. Everything is
 masked; what an ephemeral key costs is that a `HASH` pseudonym differs between instances and after a
 restart, so a pseudonymised customer id stops correlating across the topic. The fallback logs an ERROR
-saying so.
+saying so — once, not per record: the resolved masker is cached against the *identity* of the installed
+instance, which stays absent while nothing is installed and changes the moment something is.
 
 An application that constructs its own plugins does not need any of this — pass a `DataMask` or a
 `MaskingEngine` to the constructor. Spring's `DefaultKafkaProducerFactory` takes serializer instances,
@@ -285,17 +294,39 @@ received and stay true of them.
 
 ## Observability
 
-Every masked value is reported to the `MaskingObserver` with a path that names the site:
-`kafka:value/payments`, `kafka:key/payments`, `kafka:header/payments/x-customer-email`.
+Every masked value is reported to the `MaskingObserver` with a path that names the site, in the
+`<module>:<site>[/<detail>]` grammar the other integrations are aligned to:
+
+```
+kafka:value/payments                     the record value
+kafka:key/payments                       the record key
+kafka:header/payments/x-customer-email   one header of one topic
+kafka:record/payments                    a whole record that had to be dropped
+```
+
+That path is also handed to the engine as the **root** of the graph it walks, so a failure at the root
+of a payload — an unrebuildable type — is reported as `kafka:value/payments` rather than against the
+empty string, and everything the walk reports below it (`kafka:value/payments.iban`) is built from it.
+A rule that keys on the scheme therefore sees every event this module causes.
 
 `onUnannotatedPii` is the one to alert on. It fires when a detector finds PII in something nobody
 annotated, and on this boundary that means a value nobody classified is on its way to a topic — the
-earliest warning available that a new field is leaking.
+earliest warning available that a new field is leaking. Headers and plain-text payloads are scanned as
+*undeclared* text for exactly that reason: nothing declared them free text, so a hit in one is the
+signal, not routine. `onScanned` — the quieter event, for text a `@PII(strategy = SCAN)` or a
+`FREEFORM_TEXT` category declared — therefore has no call site here, and giving it one would silence
+the signal this boundary exists to raise.
+
+`onCollectionTruncated` and `onDepthLimitExceeded` likewise have no call site of their own here. They
+belong to the engine walking a payload, and they already arrive under this module's path because the
+walk starts from it. Nothing in this module truncates anything: a record an interceptor cannot mask is
+a failure rather than a size limit, and it is reported as one.
 
 `onFailure` is reported with `kafka:record/payments` when an interceptor drops a whole record, on
 either side. It names the record rather than a field because the record is what was lost, and it is
 what puts a dropped record into `datamask.failures` instead of only into a log file nobody has an
-alert on.
+alert on. A dropped payload therefore produces two reports — where the value broke, then the record
+that was lost — and both are wanted.
 
 ## Tests
 

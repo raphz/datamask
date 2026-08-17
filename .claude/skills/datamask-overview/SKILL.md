@@ -58,6 +58,7 @@ language and API features freely — `javax.crypto.KDF` (HKDF), record patterns,
 | `datamask-spring-boot-starter` | **implemented** | Core plus the auto-configuration; integrations stay opt-in |
 | `datamask-check-processor` | **implemented** | Compile-time validation of `@PII` usage |
 | `datamask-build-processor` | **implemented** | Mask plans generated at compile time; `GeneratedMaskPlanCompiler` in core reads them |
+| `datamask-benchmarks` | **implemented** | JMH: what masking costs per log event and per object graph. Never published |
 | `datamask-architecture-tests` | **verification only** | ArchUnit rules over the dependencies between the modules. Never published |
 
 "Scaffolded, empty" means `build.gradle` with correct dependencies exists and builds; there is no
@@ -65,7 +66,9 @@ language and API features freely — `javax.crypto.KDF` (HKDF), record patterns,
 
 `datamask-architecture-tests` is not an artifact: it applies `datamask.java-base-conventions` rather
 than `datamask.java-conventions` so it has no route to Central, and both the BOM and the coverage
-aggregation exclude it by name.
+aggregation exclude it by name. `datamask-benchmarks` is unpublished by exactly the same mechanism —
+copy that pattern for anything else that verifies or measures the library rather than being part of
+it.
 
 **Implementing a module is not finished until `ModuleDependencyTest` knows about it** — the module map
 above and that test are the two places a new module has to be registered, and
@@ -111,8 +114,13 @@ autoconfigure module's `build.gradle`, and a `datamask.<name>.enabled` component
 (`DataMaskJacksonAutoConfiguration`), or an installer bean filling in a static hand-off for a plugin
 the framework builds by class name (`LogbackDataMaskInstaller`, `KafkaDataMaskInstaller`).
 
-A benchmark module (JMH) was considered and deliberately deferred — worth adding once an
-integration puts the engine on a logging hot path.
+The benchmark module was deferred until an integration put the engine on a logging hot path; logback
+and log4j2 did, so **`datamask-benchmarks` now exists** and the deferral is over. Its headline is a
+clean `INFO` line through the masking appender against the same event through a plain one, and its
+first result is worth knowing before touching anything on that path: a clean line costs ~11 µs, and
+~98% of that is the unfiltered regex fan-out in `TextSanitizer`, not the engine. See
+`datamask-benchmarks/README.md`; a performance change to the core or to a logging module should come
+with a before/after from it.
 
 Two things the implemented integrations established that the remaining ones should copy: an
 integration takes a `MaskingEngine` (with a `DataMask` convenience constructor), and it returns the

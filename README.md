@@ -78,7 +78,10 @@ that nobody declared — the payment reference a customer typed their own IBAN i
 message quoting a row. Detection uses check digits (Luhn, IBAN mod-97, AVS EAN-13) rather than
 shape alone, so an order reference is not reported as a card number. Every detector hit on
 unannotated data is reported to the observer: **that signal is the one worth alerting on**, because
-it is the earliest warning that a new field is leaking.
+it is the earliest warning that a new field is leaking. Nothing else is routed through it — a field
+declared as free text produces hits by design, and those are reported separately so the alert stays
+worth having. Every report carries a path that names its source (`kafka:value/payments`,
+`jdbc:param/2`, `logback:com.acme.Ledger/arg0`), so one rule can tell the integrations apart.
 
 **Some things are never partially revealed.** A card verification value, a credential or biometric
 data is redacted whole, even if an annotation or a policy asks to keep some of it.
@@ -104,17 +107,25 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | [`datamask-spring-boot-autoconfigure`](datamask-spring-boot-autoconfigure/README.md) | **implemented** | One `DataMask` from properties, wired into every module on the classpath. |
 | [`datamask-check-processor`](datamask-check-processor/README.md) | **implemented** | Compile-time validation of `@PII` usage. |
 | [`datamask-build-processor`](datamask-build-processor/README.md) | **implemented** | Masking plans generated at compile time, so nothing is reflected at runtime. |
+| [`datamask-benchmarks`](datamask-benchmarks/README.md) | **implemented** | What masking costs per log event and per object graph, measured with JMH. Not published. |
 
 `datamask-api` is deliberately dependency-free so a domain module can declare `@PII` without taking
 on the engine, a reflection library, or a logging framework.
 
 That, and the rest of the dependency direction between the modules, is enforced rather than reviewed:
 [`datamask-architecture-tests`](datamask-architecture-tests/README.md) holds every module on its test
-classpath and fails the build when it drifts. It is not in the table because it is not published.
+classpath and fails the build when it drifts. It is not in the table because it is not an artifact —
+there is nothing to depend on. `datamask-benchmarks` is not published either, but it is in the table:
+what it reports is something an adopter needs before putting the logging modules in front of a
+production log volume.
 
 ## Requirements
 
-Java 25 or later.
+Java 25 or later. Every published module carries an `Automatic-Module-Name`
+(`ch.raph.datamask.core`, `ch.raph.datamask.jdbc`, …) so a modular application gets a stable name
+rather than one derived from the jar's file name, and every package is JSpecify `@NullMarked` — the
+annotations are `compileOnly`, so nothing is added to your runtime classpath and `datamask-api` keeps
+its zero-dependency guarantee.
 
 ## Building
 

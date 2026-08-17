@@ -2,6 +2,7 @@ package ch.raph.datamask.log4j2;
 
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.application.MaskingEngine;
+import ch.raph.datamask.application.ResolvedMasker;
 import org.apache.logging.log4j.core.Core;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.rewrite.RewritePolicy;
@@ -44,25 +45,25 @@ import org.apache.logging.log4j.core.config.plugins.PluginFactory;
 @Plugin(name = "DataMask", category = Core.CATEGORY_NAME, elementType = "rewritePolicy", printObject = true)
 public final class MaskingRewritePolicy implements RewritePolicy {
 
-    private final MaskerSource maskers;
+    private final ResolvedMasker<LogEventMasker> maskers;
 
-    private MaskingRewritePolicy(MaskerSource maskers) {
+    private MaskingRewritePolicy(ResolvedMasker<LogEventMasker> maskers) {
         this.maskers = maskers;
     }
 
     /** For an application that builds its own engine — a Spring auto-configuration, or a test. */
     public MaskingRewritePolicy(DataMask dataMask) {
-        this(MaskerSource.of(dataMask));
+        this(LogEventMaskers.of(dataMask));
     }
 
     public MaskingRewritePolicy(MaskingEngine engine) {
-        this(MaskerSource.of(engine));
+        this(LogEventMaskers.of(engine));
     }
 
     @PluginFactory
     public static MaskingRewritePolicy createPolicy(
             @PluginAttribute(value = "secret", sensitive = true) String secret) {
-        return new MaskingRewritePolicy(MaskerSource.forSecret(secret));
+        return new MaskingRewritePolicy(LogEventMaskers.forSecret(secret));
     }
 
     @Override

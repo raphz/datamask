@@ -126,12 +126,19 @@ public final class Payments {
     /** A tree nobody classified — a webhook body, a stored document, an audit detail. */
     public record Webhook(String id, JsonNode payload) {}
 
+    /**
+     * Free text whose author <em>declared</em> it as such. A detector hit here is the scanner doing
+     * the job it was asked to do, not the discovery that a field nobody classified is leaking.
+     */
+    public record SupportTicket(
+            @PII(category = PiiCategory.FREEFORM_TEXT) String body) {}
+
     /** A {@code CharSequence} that is not a {@code String}, which Jackson serialises differently. */
     public record Note(StringBuilder body) {}
 
     /**
      * The party of an order, written flattened into it. One property is masked, one is exempt from
-     * masking and from the scanner, and one is dropped by the plan.
+     * masking and from the scanner, and one is dropped by a {@code PolicyOverrides} entry.
      */
     public record Party(
             @PII(category = PiiCategory.EMAIL) String email,

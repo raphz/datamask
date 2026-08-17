@@ -47,8 +47,8 @@ class MaskingConsumerInterceptorTest {
     void masksTheWholeRecord() {
         ConsumerInterceptor<String, Payments.Payment> interceptor = new MaskingConsumerInterceptor<>(dataMask);
 
-        ConsumerRecord<String, Payments.Payment> masked = only(
-                interceptor.onConsume(batch(record(11L, payment(), header("x-customer-email", EMAIL)))));
+        ConsumerRecord<String, Payments.Payment> masked =
+                only(interceptor.onConsume(batch(record(11L, payment(), header("x-customer-email", EMAIL)))));
 
         assertThat(masked.value().iban()).doesNotContain(IBAN);
         assertThat(headerValue(masked, "x-customer-email")).doesNotContain(EMAIL);
@@ -154,7 +154,10 @@ class MaskingConsumerInterceptorTest {
 
         interceptor.onConsume(batch(record(11L, new Payments.Unrebuildable(IBAN, "x", 1))));
 
-        assertThat(failures).containsExactly("kafka:record/payments");
+        // Two reports, and both are wanted. The engine reports where the value broke, under the root
+        // path this module hands it; the interceptor reports the record it then had to drop. Neither
+        // path is the empty string, which is what makes a rule keyed on the scheme prefix work.
+        assertThat(failures).containsExactly("kafka:value/payments", "kafka:record/payments");
     }
 
     @Test
@@ -183,7 +186,9 @@ class MaskingConsumerInterceptorTest {
         DataMaskKafka.install(dataMask);
         ConsumerInterceptor<String, Payments.Payment> interceptor = configured(Map.of());
 
-        assertThat(only(interceptor.onConsume(batch(record(11L, payment())))).value().iban())
+        assertThat(only(interceptor.onConsume(batch(record(11L, payment()))))
+                        .value()
+                        .iban())
                 .doesNotContain(IBAN);
     }
 
@@ -192,7 +197,9 @@ class MaskingConsumerInterceptorTest {
     void fallsBackToStrictMasking() {
         ConsumerInterceptor<String, Payments.Payment> interceptor = configured(Map.of());
 
-        assertThat(only(interceptor.onConsume(batch(record(11L, payment())))).value().iban())
+        assertThat(only(interceptor.onConsume(batch(record(11L, payment()))))
+                        .value()
+                        .iban())
                 .doesNotContain(IBAN);
     }
 

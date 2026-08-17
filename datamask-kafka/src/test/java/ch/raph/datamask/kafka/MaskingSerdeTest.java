@@ -52,7 +52,8 @@ class MaskingSerdeTest {
         DataMaskKafka.install(dataMask);
         Serde<String> serde = new MaskingSerde<>(Serdes.String());
 
-        assertThat(text(serde.serializer().serialize("payments", "pay " + IBAN))).doesNotContain(IBAN);
+        assertThat(text(serde.serializer().serialize("payments", "pay " + IBAN)))
+                .doesNotContain(IBAN);
     }
 
     @Test

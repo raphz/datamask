@@ -36,6 +36,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Walks an object graph and produces a masked copy of it.
@@ -69,17 +70,31 @@ public final class MaskingEngine {
     }
 
     /** Returns a masked copy of the graph rooted at {@code value}. */
-    public Object mask(Object value) {
-        return descend(value, "", 0, new IdentityHashMap<>());
+    public @Nullable Object mask(@Nullable Object value) {
+        return mask(value, "");
+    }
+
+    /**
+     * The same, with a root path naming where the graph came from — {@code kafka:value/payments},
+     * {@code jackson:Customer}.
+     *
+     * <p>Worth passing from an integration. Every path an observer sees is built from this one, so a
+     * failure at the root of the graph is reported against the empty string without it, and a rule
+     * that keys on the scheme cannot tell which integration lost a value. The integrations name
+     * every other site they report; this is the one they could not reach.
+     */
+    public @Nullable Object mask(@Nullable Object value, String path) {
+        return descend(value, path, 0, new IdentityHashMap<>());
     }
 
     /** Masks the PII inside a string, leaving the rest of the text intact. */
-    public String maskText(CharSequence text, String path) {
+    public @Nullable String maskText(@Nullable CharSequence text, String path) {
         return sanitizer.sanitize(text, path);
     }
 
     /** Masks a single value against an explicit declaration, for integrations that already know it. */
-    public Object maskDeclared(Object value, PiiDescriptor descriptor, Class<?> declaredType, String path) {
+    public @Nullable Object maskDeclared(
+            @Nullable Object value, PiiDescriptor descriptor, Class<?> declaredType, String path) {
         return maskLeaf(value, descriptor, declaredType, path);
     }
 
@@ -527,7 +542,8 @@ public final class MaskingEngine {
             case REDACT -> policy.redactionPlaceholder();
             case THROW -> throw MaskingException.atPath(path, "masker failed", failure);
             case PASS_THROUGH ->
-                throw MaskingException.atPath(path, "PASS_THROUGH would disclose the value that failed to mask", failure);
+                throw MaskingException.atPath(
+                        path, "PASS_THROUGH would disclose the value that failed to mask", failure);
         };
     }
 

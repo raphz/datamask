@@ -7,14 +7,11 @@ import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.api.Sensitivity;
 import ch.raph.datamask.application.DataMask;
-import ch.raph.datamask.application.MaskPlanCompiler;
 import ch.raph.datamask.domain.FailureMode;
-import ch.raph.datamask.domain.MaskAction;
-import ch.raph.datamask.domain.MaskPlan;
 import ch.raph.datamask.domain.MaskingException;
 import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.domain.MaskingPolicy;
-import ch.raph.datamask.domain.MemberPlan;
+import ch.raph.datamask.domain.PolicyOverrides;
 import ch.raph.datamask.jackson.testdomain.Payments;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,28 +44,18 @@ class DataMaskModuleTest {
     }
 
     /**
-     * A DataMask whose plan for one type drops one member. Nothing in the annotations produces
-     * {@code MaskAction.Drop} today, so the compiler port is used to build the plan that does.
+     * A DataMask configured to drop one member, which is the route a deployment actually takes:
+     * {@code PolicyOverrides.builder().drop(...)} compiles to {@code MaskAction.Drop}, and this
+     * module is what honours it by leaving the property out of the document altogether.
+     *
+     * <p>The builder falls back to the reflective compiler whenever overrides are present, so the
+     * generated-plan path is deliberately not involved.
      */
     private static DataMask withDropped(Class<?> type, String member) {
-        MaskPlanCompiler reflective =
-                DataMask.builder().secret(SECRET).build().engine().compiler();
         return DataMask.builder()
                 .secret(SECRET)
-                .compiler(compiled -> drop(reflective.planFor(compiled), compiled == type ? member : null))
+                .overrides(PolicyOverrides.builder().drop(type, member).build())
                 .build();
-    }
-
-    private static MaskPlan drop(MaskPlan plan, String member) {
-        if (member == null) {
-            return plan;
-        }
-        List<MemberPlan> members = plan.members().stream()
-                .map(m -> m.name().equals(member)
-                        ? new MemberPlan(m.name(), m.declaredType(), m.accessor(), MaskAction.DROP)
-                        : m)
-                .toList();
-        return new MaskPlan(plan.type(), members, plan.rebuilder(), plan.failure());
     }
 
     @Nested
@@ -226,6 +213,32 @@ class DataMaskModuleTest {
             String json = mapper.writeValueAsString(new Payments.Reconciliation(IBAN));
 
             assertThat(json).isEqualTo("{\"houseIban\":\"" + IBAN + "\"}");
+        }
+    }
+
+    @Nested
+    @DisplayName("Dropped members")
+    class Dropped {
+
+        @Test
+        @DisplayName("omits a member the deployment dropped, leaving no trace that the field exists")
+        void omitsADroppedMember() {
+            DataMask dropping = withDropped(Payments.Payment.class, "reference");
+
+            String json = mapperWith(dropping)
+                    .writeValueAsString(new Payments.Payment("rent for " + IBAN, null, List.of(), Map.of()));
+
+            assertThat(json).doesNotContain("reference").doesNotContain(IBAN).contains("\"notes\":[]");
+        }
+
+        @Test
+        @DisplayName("drops ahead of a @NoMask exemption, because the deployment is the one being audited")
+        void dropsAheadOfAnExemption() {
+            DataMask dropping = withDropped(Payments.Account.class, "currency");
+
+            String json = mapperWith(dropping).writeValueAsString(new Payments.Account(IBAN, "CHF"));
+
+            assertThat(json).doesNotContain("currency").doesNotContain("CHF").contains("\"iban\"");
         }
     }
 
@@ -464,29 +477,88 @@ class DataMaskModuleTest {
     @DisplayName("Observation")
     class Observation {
 
+        private final Recorder recorder = new Recorder();
+
+        private final ObjectMapper observed =
+                mapperWith(DataMask.builder().secret(SECRET).observer(recorder).build());
+
         @Test
         @DisplayName("reports every masked property with the path and category, for the compliance record")
         void reportsMaskedProperties() {
-            Recorder recorder = new Recorder();
-            DataMask observed =
-                    DataMask.builder().secret(SECRET).observer(recorder).build();
+            observed.writeValueAsString(new Payments.Account(IBAN, "CHF"));
 
-            mapperWith(observed).writeValueAsString(new Payments.Account(IBAN, "CHF"));
-
-            assertThat(recorder.masked).containsExactly("Account.iban:IBAN:IBAN");
+            assertThat(recorder.masked).containsExactly("jackson:Account/iban:IBAN:IBAN");
         }
 
         @Test
         @DisplayName("reports a detector hit on a value nobody annotated, the earliest warning that a field leaks")
         void reportsUndeclaredPii() {
-            Recorder recorder = new Recorder();
-            DataMask observed =
-                    DataMask.builder().secret(SECRET).observer(recorder).build();
+            observed.writeValueAsString(new Payments.Payment("rent for " + IBAN, null, List.of(), Map.of()));
 
-            mapperWith(observed)
-                    .writeValueAsString(new Payments.Payment("rent for " + IBAN, null, List.of(), Map.of()));
+            assertThat(recorder.undeclared).containsExactly("jackson:text/reference:IBAN");
+        }
 
-            assertThat(recorder.undeclared).containsExactly("reference:IBAN");
+        @Test
+        @DisplayName("names the map-key site, which is a different hole from a value carrying PII")
+        void namesTheMapKeySite() {
+            observed.writeValueAsString(new Payments.Payment("PMT-1", null, List.of(), Map.of(IBAN, "42.00")));
+
+            assertThat(recorder.undeclared).containsExactly("jackson:key/attributes:IBAN");
+        }
+
+        @Test
+        @DisplayName("names the tree site, so an untyped payload is distinguishable from a typed property")
+        void namesTheTreeSite() {
+            ObjectNode payload = JsonNodeFactory.instance.objectNode();
+            payload.putObject("customer").put("note", "called " + EMAIL);
+
+            observed.writeValueAsString(new Payments.Webhook("wh-1", payload));
+
+            assertThat(recorder.undeclared).containsExactly("jackson:tree/payload:EMAIL");
+        }
+
+        @Test
+        @DisplayName("marks a name inside a tree as a key, the way the engine marks a map key")
+        void namesTheTreeKeySite() {
+            ObjectNode payload = JsonNodeFactory.instance.objectNode();
+            payload.put(EMAIL, "owner");
+
+            observed.writeValueAsString(new Payments.Webhook("wh-1", payload));
+
+            assertThat(recorder.undeclared).containsExactly("jackson:tree/payload{key}:EMAIL");
+        }
+
+        @Test
+        @DisplayName("falls back to the site alone for a value written outside any property")
+        void namesTheSiteAloneAtTheRoot() {
+            observed.writeValueAsString("rent for " + IBAN);
+
+            assertThat(recorder.undeclared).containsExactly("jackson:text:IBAN");
+        }
+
+        @Test
+        @DisplayName("reports declared free text as a scan, so it does not dilute the unannotated-PII alert")
+        void reportsDeclaredFreeTextAsAScan() {
+            observed.writeValueAsString(new Payments.SupportTicket("customer quoted " + IBAN));
+
+            assertThat(recorder.scanned).containsExactly("jackson:SupportTicket/body:IBAN");
+            assertThat(recorder.undeclared).isEmpty();
+        }
+
+        @Test
+        @DisplayName("prefixes every path with the module, so a rule keying on the scheme can tell sources apart")
+        void prefixesEveryPathWithTheModule() {
+            ObjectNode payload = JsonNodeFactory.instance.objectNode();
+            payload.put(EMAIL, "called " + EMAIL);
+
+            observed.writeValueAsString(new Payments.Account(IBAN, "CHF"));
+            observed.writeValueAsString(new Payments.SupportTicket("customer quoted " + IBAN));
+            observed.writeValueAsString(new Payments.Webhook("wh-1", payload));
+            observed.writeValueAsString(new Payments.Payment("rent for " + IBAN, null, List.of(), Map.of(EMAIL, "x")));
+
+            assertThat(recorder.everything())
+                    .isNotEmpty()
+                    .allSatisfy(path -> assertThat(path).startsWith("jackson:"));
         }
     }
 
@@ -519,7 +591,7 @@ class DataMaskModuleTest {
 
             assertThat(thrown)
                     .hasCauseInstanceOf(MaskingException.class)
-                    .hasMessageContaining("Fragile.secret")
+                    .hasMessageContaining("jackson:Fragile/secret")
                     .hasMessageNotContaining(IBAN);
             assertThat(thrown.getCause()).hasMessageNotContaining(IBAN);
         }
@@ -538,7 +610,7 @@ class DataMaskModuleTest {
             String json = mapperWith(broken).writeValueAsString(payment);
 
             assertThat(json).doesNotContain(IBAN).contains("\"reference\":\"****\"");
-            assertThat(recorder.failures).containsExactly("reference");
+            assertThat(recorder.failures).containsExactly("jackson:text/reference");
         }
 
         @Test
@@ -573,6 +645,7 @@ class DataMaskModuleTest {
 
         private final List<String> masked = new ArrayList<>();
         private final List<String> undeclared = new ArrayList<>();
+        private final List<String> scanned = new ArrayList<>();
         private final List<String> failures = new ArrayList<>();
 
         @Override
@@ -586,8 +659,22 @@ class DataMaskModuleTest {
         }
 
         @Override
+        public void onScanned(String path, PiiCategory category, String detector) {
+            scanned.add(path + ":" + category);
+        }
+
+        @Override
         public void onFailure(String path, Throwable failure) {
             failures.add(path);
+        }
+
+        /** Every path this observer was told about, whichever signal carried it. */
+        private List<String> everything() {
+            List<String> all = new ArrayList<>(masked);
+            all.addAll(undeclared);
+            all.addAll(scanned);
+            all.addAll(failures);
+            return all;
         }
     }
 }

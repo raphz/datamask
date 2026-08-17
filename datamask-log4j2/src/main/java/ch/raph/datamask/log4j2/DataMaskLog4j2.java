@@ -1,9 +1,8 @@
 package ch.raph.datamask.log4j2;
 
 import ch.raph.datamask.application.DataMask;
-import java.util.Objects;
+import ch.raph.datamask.application.InstalledDataMask;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Where the log4j2 plugins find their {@link DataMask}.
@@ -22,29 +21,33 @@ import java.util.concurrent.atomic.AtomicReference;
  * secret to configure can leave this alone: a plugin with nothing to use falls back to strict masking
  * under an ephemeral key, which masks everything correctly but makes pseudonyms incomparable across
  * restarts.
+ *
+ * <p>The holder itself is {@link InstalledDataMask}, shared with every other integration that starts
+ * before the application does — which is also where the "one instance per classloader that loaded the
+ * holder" caveat is written down once for all of them.
  */
 public final class DataMaskLog4j2 {
 
-    private static final AtomicReference<DataMask> INSTALLED = new AtomicReference<>();
+    private static final InstalledDataMask INSTALLED = InstalledDataMask.holder();
 
     private DataMaskLog4j2() {}
 
     /** Makes this instance the one every plugin without a secret of its own will use. */
     public static void install(DataMask dataMask) {
-        INSTALLED.set(Objects.requireNonNull(dataMask, "dataMask"));
+        INSTALLED.install(dataMask);
     }
 
     public static Optional<DataMask> installed() {
-        return Optional.ofNullable(INSTALLED.get());
+        return INSTALLED.installed();
     }
 
     /** Forgets the installed instance. For tests, and for a container shutting down. */
     public static void uninstall() {
-        INSTALLED.set(null);
+        INSTALLED.uninstall();
     }
 
-    /** The nullable form, for the plugins: this is read on every event. */
-    static DataMask current() {
-        return INSTALLED.get();
+    /** What the plugins resolve against; it is read on every event. */
+    static InstalledDataMask holder() {
+        return INSTALLED;
     }
 }

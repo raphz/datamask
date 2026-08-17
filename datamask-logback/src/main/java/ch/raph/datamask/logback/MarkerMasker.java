@@ -67,7 +67,7 @@ final class MarkerMasker {
         List<Marker> masked = null;
         for (int i = 0; i < markers.size(); i++) {
             Marker marker = markers.get(i);
-            Marker safe = maskMarker(marker, origin + ".marker", 0);
+            Marker safe = maskMarker(marker, origin + "/marker", 0);
             if (safe != marker && masked == null) {
                 masked = new ArrayList<>(markers);
             }
@@ -89,10 +89,11 @@ final class MarkerMasker {
         }
         String path = basePath;
         try {
-            path = basePath + "." + name(marker);
+            path = basePath + "/" + name(marker);
             if (depth > engine.policy().maxDepth()) {
-                // Bounded like the engine's own traversal: marker references form a graph, and the
-                // fail-closed way to stop walking one is to stop disclosing.
+                // Genuinely the depth limit, not a truncation: a marker's references are the levels
+                // of a graph, and `depth` counts how far down one this marker sits. The fail-closed
+                // way to stop walking it is to stop disclosing.
                 observer.onDepthLimitExceeded(path);
                 return redacted();
             }
@@ -144,7 +145,7 @@ final class MarkerMasker {
             String safe = scan(rendered, path);
             return safe == rendered ? value : safe;
         }
-        return engine.mask(value);
+        return engine.mask(value, path);
     }
 
     String scan(String text, String path) {

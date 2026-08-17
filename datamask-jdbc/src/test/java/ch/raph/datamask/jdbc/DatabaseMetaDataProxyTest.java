@@ -91,12 +91,13 @@ class DatabaseMetaDataProxyTest {
             case "next" -> throw violation();
             default -> null;
         });
-        DatabaseMetaData metaData = (DatabaseMetaData) stub(DatabaseMetaData.class, method -> switch (method.getName()) {
-            case "getConnection" -> connection[0];
-            case "getTables" -> throw violation();
-            case "getColumns" -> resultSet;
-            default -> null;
-        });
+        DatabaseMetaData metaData =
+                (DatabaseMetaData) stub(DatabaseMetaData.class, method -> switch (method.getName()) {
+                    case "getConnection" -> connection[0];
+                    case "getTables" -> throw violation();
+                    case "getColumns" -> resultSet;
+                    default -> null;
+                });
         Statement statement = (Statement) stub(Statement.class, method -> switch (method.getName()) {
             case "execute" -> throw violation();
             case "getConnection" -> connection[0];

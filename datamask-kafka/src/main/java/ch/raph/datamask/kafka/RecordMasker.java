@@ -207,7 +207,8 @@ public final class RecordMasker {
         }
         // A CharSequence has no members to read a declaration from, so the detectors decide. Going
         // through maskText rather than the engine's own CharSequence branch is what gives the observer
-        // a path that names the topic instead of an empty string.
+        // a path that names the topic; the object branch below passes the same path into the engine
+        // for the same reason.
         if (value instanceof CharSequence text) {
             if (!scanText) {
                 return value;
@@ -221,7 +222,7 @@ public final class RecordMasker {
         // The engine's contract is a masked copy of the same type, which is what makes this cast
         // sound. If it ever were not, the serializer downstream rejects the value rather than
         // writing it: a type error fails the send, and a failed send discloses nothing.
-        Object masked = engine.mask(value);
+        Object masked = engine.mask(value, path);
         if (masked == null) {
             // The engine degrades a structural failure — an unrebuildable or unreadable type — to
             // null, which is the right fail-closed answer for a log line. Here it is not: a null

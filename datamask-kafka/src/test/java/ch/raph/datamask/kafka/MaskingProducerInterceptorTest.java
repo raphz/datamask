@@ -149,9 +149,11 @@ class MaskingProducerInterceptorTest {
                 interceptor.onSend(record(new Payments.Unrebuildable(IBAN, "x", 1)));
 
         assertThat(dropped).isNull();
-        // The engine reports the structural failure under its own root path first; what this
-        // pins is the second one, which names the record the interceptor then dropped.
-        assertThat(failures).contains("kafka:record/payments");
+        // Two reports, and both are wanted, exactly as on the consumer side. The engine reports where
+        // the value broke, under the root path this module hands it; the interceptor reports the record
+        // it then had to drop. Neither path is the empty string, which is what makes a rule keyed on
+        // the scheme prefix work.
+        assertThat(failures).containsExactly("kafka:value/payments", "kafka:record/payments");
     }
 
     @Test

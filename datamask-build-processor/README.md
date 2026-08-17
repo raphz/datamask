@@ -30,6 +30,18 @@ whichever request happens to be first. That is exactly where a p99 is measured.
 | A module that opens nothing | `privateLookupIn` fails, silently down to `publicLookup()` | unaffected |
 | GraalVM native image | needs reachability metadata for every masked type | needs none |
 
+**What that is worth, measured.** `datamask-benchmarks` puts cold plan compilation for three types at
+**30.5 µs reflectively against 9.2 µs generated — about 3×**. Steady-state masking through a warm
+plan is **indistinguishable**: 2.52 µs reflective against 2.73 µs generated, both inside their own
+error bars. So the row about reading a
+member through a `MethodHandle` is true and does not matter — the JIT flattens the difference long
+before it shows up in a throughput number.
+
+Sell this module on **startup and on GraalVM**, not on throughput. What it buys is the first request
+carrying each type, and a native image that needs no reachability metadata. If your p99 is dominated
+by masking, the thing to look at is content scanning, which costs an order of magnitude more than the
+whole plan mechanism either way.
+
 The generated source for a record is what you would have written by hand:
 
 ```java

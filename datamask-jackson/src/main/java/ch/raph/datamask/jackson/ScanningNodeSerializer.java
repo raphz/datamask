@@ -23,6 +23,16 @@ import tools.jackson.databind.node.StringNode;
  *
  * <p>The copy is built only where something changed; an unchanged subtree is reused, which keeps a
  * PII-free document allocation-free.
+ *
+ * <p><strong>A finding in a tree is unannotated PII, not a declared scan.</strong> The two signals
+ * differ by whether somebody said the value holds free text, and a {@code JsonNode} member says the
+ * opposite of that: it is a hole in the schema, a declaration that the <em>shape</em> is unknown,
+ * never a statement about the content. A property that <em>was</em> declared —
+ * {@code FREEFORM_TEXT}, or a {@code SCAN} strategy — never reaches this serializer at all, because
+ * the modifier has already replaced its writer with a {@link MaskingSerializer} and the engine
+ * routes it to {@code sanitizeDeclared}. So every string arriving here is one nobody classified,
+ * which is exactly the alert-worthy case: an upstream payload has started carrying PII and the
+ * contract needs a policy. That is also the switch it hangs off — {@code scanUnannotatedText}.
  */
 final class ScanningNodeSerializer extends ValueSerializer<BaseJsonNode> {
 
@@ -38,14 +48,13 @@ final class ScanningNodeSerializer extends ValueSerializer<BaseJsonNode> {
 
     @Override
     public void serialize(BaseJsonNode value, JsonGenerator generator, SerializationContext context) {
-        node(masked(value, TextScanner.pathOf(generator))).serialize(generator, context);
+        node(masked(value, TextScanner.treePathOf(generator))).serialize(generator, context);
     }
 
     @Override
     public void serializeWithType(
             BaseJsonNode value, JsonGenerator generator, SerializationContext context, TypeSerializer typeSerializer) {
-        node(masked(value, TextScanner.pathOf(generator)))
-                .serializeWithType(generator, context, typeSerializer);
+        node(masked(value, TextScanner.treePathOf(generator))).serializeWithType(generator, context, typeSerializer);
     }
 
     @Override
@@ -68,7 +77,9 @@ final class ScanningNodeSerializer extends ValueSerializer<BaseJsonNode> {
         boolean changed = false;
         for (Map.Entry<String, JsonNode> property : object.properties()) {
             // A property name in a free-form tree is data the same way a map key is, and it reaches
-            // the document through a different route than the value does.
+            // the document through a different route than the value does. The `{key}` suffix is the
+            // engine's own convention for "the key of this thing", and it is what separates a name
+            // from a value under the one `jackson:tree/...` site.
             String name = maskNames ? scanner.scan(property.getKey(), path + "{key}") : property.getKey();
             JsonNode value = masked(property.getValue(), path);
             changed |= !name.equals(property.getKey()) || value != property.getValue();

@@ -2,6 +2,7 @@ package ch.raph.datamask.kafka;
 
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.application.MaskingEngine;
+import ch.raph.datamask.application.ResolvedMasker;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -67,11 +68,11 @@ public final class MaskingProducerInterceptor<K, V> implements ProducerIntercept
      * For an interceptor constructed by hand and never configured. Nothing on this path is
      * configurable, so there is a right answer rather than an error: whatever was installed.
      */
-    private static final MaskerSource DEFAULTS = MaskerSource.installed(false, Set.of());
+    private static final ResolvedMasker<RecordMasker> DEFAULTS = DataMaskKafka.resolving(false, Set.of());
 
     // Not final because Kafka builds this class by name and configures it afterwards. Volatile because
     // configure runs on the thread that constructs the producer, and onSend on whichever calls send.
-    private volatile MaskerSource source;
+    private volatile ResolvedMasker<RecordMasker> source;
 
     /** For Kafka, which constructs this by name and configures it afterwards. */
     public MaskingProducerInterceptor() {}
@@ -86,13 +87,13 @@ public final class MaskingProducerInterceptor<K, V> implements ProducerIntercept
     }
 
     public MaskingProducerInterceptor(RecordMasker masker) {
-        this.source = MaskerSource.of(masker);
+        this.source = ResolvedMasker.of(masker);
     }
 
     @Override
     public void configure(Map<String, ?> configs) {
         if (source == null) {
-            source = MaskerSource.installed(Settings.maskKeys(configs), Settings.redactedHeaders(configs));
+            source = DataMaskKafka.resolving(Settings.maskKeys(configs), Settings.redactedHeaders(configs));
         }
     }
 
@@ -135,7 +136,7 @@ public final class MaskingProducerInterceptor<K, V> implements ProducerIntercept
     }
 
     private RecordMasker masker() {
-        MaskerSource resolved = source;
+        ResolvedMasker<RecordMasker> resolved = source;
         return (resolved != null ? resolved : DEFAULTS).get();
     }
 

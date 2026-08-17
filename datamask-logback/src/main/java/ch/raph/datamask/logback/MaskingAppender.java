@@ -7,6 +7,7 @@ import ch.qos.logback.core.spi.AppenderAttachable;
 import ch.qos.logback.core.spi.AppenderAttachableImpl;
 import ch.raph.datamask.application.DataMask;
 import ch.raph.datamask.application.MaskingEngine;
+import ch.raph.datamask.application.ResolvedMasker;
 import java.util.Iterator;
 import java.util.Objects;
 
@@ -53,23 +54,25 @@ public final class MaskingAppender extends UnsynchronizedAppenderBase<ILoggingEv
 
     private final AppenderAttachableImpl<ILoggingEvent> nested = new AppenderAttachableImpl<>();
 
-    /** Configured on this appender, and then the only thing consulted. */
-    private volatile LoggingEventMasker configured;
+    /** Configured on this appender, and then the only thing consulted. Null until something is. */
+    private volatile ResolvedMasker<LoggingEventMasker> configured;
 
-    /** The installed-or-fallback path, keyed by its source so a later {@code install} is not missed. */
-    private volatile Wiring wiring;
+    /**
+     * The installed-or-fallback path. Keyed on the installed instance by {@link ResolvedMasker}, so a
+     * later {@code install} is not missed and the fallback is built once rather than per event.
+     */
+    private final ResolvedMasker<LoggingEventMasker> resolved =
+            ResolvedMasker.installed(DataMaskLogback.holder(), LoggingEventMasker::new, this::ephemeralFallback);
 
     private String secret;
 
-    private record Wiring(DataMask source, LoggingEventMasker masker) {}
-
     /** For an application that builds its own engine — a Spring auto-configuration, or a test. */
     public void setDataMask(DataMask dataMask) {
-        this.configured = new LoggingEventMasker(Objects.requireNonNull(dataMask, "dataMask"));
+        this.configured = ResolvedMasker.of(new LoggingEventMasker(Objects.requireNonNull(dataMask, "dataMask")));
     }
 
     public void setEngine(MaskingEngine engine) {
-        this.configured = new LoggingEventMasker(Objects.requireNonNull(engine, "engine"));
+        this.configured = ResolvedMasker.of(new LoggingEventMasker(Objects.requireNonNull(engine, "engine")));
     }
 
     /**
@@ -94,7 +97,7 @@ public final class MaskingAppender extends UnsynchronizedAppenderBase<ILoggingEv
             return;
         }
         if (configured == null && secret != null && !secret.isBlank()) {
-            configured = new LoggingEventMasker(fromSecret());
+            configured = ResolvedMasker.of(new LoggingEventMasker(fromSecret()));
         }
         super.start();
     }
@@ -109,36 +112,11 @@ public final class MaskingAppender extends UnsynchronizedAppenderBase<ILoggingEv
     }
 
     private LoggingEventMasker masker() {
-        LoggingEventMasker own = configured;
-        if (own != null) {
-            return own;
-        }
-
-        DataMask installed = DataMaskLogback.current();
-        Wiring current = wiring;
-        if (current != null && current.source() == installed) {
-            return current.masker();
-        }
-        return rewire(installed);
+        ResolvedMasker<LoggingEventMasker> own = configured;
+        return (own != null ? own : resolved).get();
     }
 
-    /**
-     * Resolves what nothing on this appender answered. Keyed on the installed instance, which stays
-     * null while nothing is installed, so the fallback is built once rather than per event — and
-     * replaced the moment something is installed.
-     */
-    private synchronized LoggingEventMasker rewire(DataMask installed) {
-        Wiring current = wiring;
-        if (current != null && current.source() == installed) {
-            return current.masker();
-        }
-
-        DataMask resolved = installed != null ? installed : ephemeralFallback();
-        Wiring next = new Wiring(installed, new LoggingEventMasker(resolved));
-        wiring = next;
-        return next.masker();
-    }
-
+    /** Called once per distinct installed state, never per event — see {@link ResolvedMasker}. */
     private DataMask ephemeralFallback() {
         addError("No secret and no DataMask configured on masking appender [" + getName()
                 + "]; masking with strict defaults and an ephemeral key, so pseudonyms will not be comparable"

@@ -20,7 +20,8 @@ public interface Masker {
      * @param context the declaration being masked, plus the cryptographic services of the engine
      * @return the masked representation; {@code null} to drop the value entirely
      */
-    @Nullable Object mask(Object value, MaskContext context);
+    @Nullable
+    Object mask(Object value, MaskContext context);
 
     /**
      * Whether this masker can handle a value of this type. Returning {@code false} makes the engine

@@ -54,9 +54,7 @@ class DataMaskActuatorAutoConfigurationTest {
                 + "source used and a secret usually arrives as an environment variable")
         void coversRelaxedSpellings() {
             for (String key : List.of("DATAMASK_SECRET", "datamask-secret", "Datamask.Secret")) {
-                assertThat(String.valueOf(shown(key, SECRET)))
-                        .as(key)
-                        .doesNotContain(SECRET);
+                assertThat(String.valueOf(shown(key, SECRET))).as(key).doesNotContain(SECRET);
             }
         }
 
@@ -107,8 +105,8 @@ class DataMaskActuatorAutoConfigurationTest {
         }
 
         @Test
-        @DisplayName("does nothing when the Actuator is not on the classpath, so the module still works "
-                + "without it")
+        @DisplayName(
+                "does nothing when the Actuator is not on the classpath, so the module still works " + "without it")
         void absentWithoutTheActuator() {
             runner.withClassLoader(new FilteredClassLoader(SanitizingFunction.class))
                     .run(context -> assertThat(context)

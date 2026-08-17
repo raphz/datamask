@@ -108,7 +108,8 @@ final class IneffectivePiiCheck {
     }
 
     private static List<Element> withField(TypeElement owner, Element method) {
-        if (!(method instanceof ExecutableElement accessor) || !accessor.getParameters().isEmpty()) {
+        if (!(method instanceof ExecutableElement accessor)
+                || !accessor.getParameters().isEmpty()) {
             return List.of(method);
         }
         String property = propertyNameOf(accessor.getSimpleName().toString());

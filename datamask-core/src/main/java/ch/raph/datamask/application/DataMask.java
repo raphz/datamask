@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The entry point.
@@ -65,7 +66,7 @@ public final class DataMask {
      * constructor, and for collections and maps of those.
      */
     @SuppressWarnings("unchecked")
-    public <T> T mask(T value) {
+    public <T> @Nullable T mask(@Nullable T value) {
         return (T) engine.mask(value);
     }
 
@@ -75,7 +76,7 @@ public final class DataMask {
      *
      * <p>The category decides the strategy, exactly as {@code @PII(category = …)} on a field would.
      */
-    public Object maskValue(Object value, PiiCategory category) {
+    public @Nullable Object maskValue(@Nullable Object value, PiiCategory category) {
         return maskValue(value, category, "value");
     }
 
@@ -83,19 +84,19 @@ public final class DataMask {
      * The same, with the path that reaches {@link MaskingObserver}. Worth passing: the observer
      * signal is only actionable if it says which value it was about.
      */
-    public Object maskValue(Object value, PiiCategory category, String path) {
+    public @Nullable Object maskValue(@Nullable Object value, PiiCategory category, String path) {
         Objects.requireNonNull(category, "category");
         Class<?> declaredType = value == null ? Object.class : value.getClass();
         return engine.maskDeclared(value, PiiDescriptor.of(category), declaredType, path);
     }
 
     /** Masks the PII inside a string and leaves the surrounding text readable. Null in, null out. */
-    public String maskText(CharSequence text) {
+    public @Nullable String maskText(@Nullable CharSequence text) {
         return maskText(text, "text");
     }
 
     /** The same, with the path reported to {@link MaskingObserver#onUnannotatedPii}. */
-    public String maskText(CharSequence text, String path) {
+    public @Nullable String maskText(@Nullable CharSequence text, String path) {
         return engine.maskText(text, path);
     }
 
@@ -103,7 +104,7 @@ public final class DataMask {
      * Reports the PII in a string without changing it — for auditing what a payload contains.
      * Null or empty text has no findings.
      */
-    public List<PiiFinding> scan(CharSequence text) {
+    public List<PiiFinding> scan(@Nullable CharSequence text) {
         return engine.sanitizer().scan(text);
     }
 

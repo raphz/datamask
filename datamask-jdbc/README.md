@@ -157,6 +157,23 @@ partial form that is safe by default.
 Below DEBUG **no parameter is examined at all** — masking one means running the detectors over it, and
 that cost is only paid by someone who asked for the log.
 
+## What the observer is told, and where
+
+Every path this module reports follows `<module>:<site>[/<detail>]`, so a rule downstream can key on
+the `jdbc:` prefix and know a finding came from the database layer rather than from a log appender or
+a Kafka record.
+
+| Path | Reported when |
+|---|---|
+| `jdbc:param/<index>` | A bind parameter was masked. `onUnannotatedPii` when a detector recognised it, `onMasked` with `UNSPECIFIED`/`REDACT` when nothing did. |
+| `jdbc:error` | The sanitiser itself failed (`onFailure`), or a primary message was masked on a driver whose error has no structured parts. |
+| `jdbc:error/message`, `/detail`, `/hint`, `/where` | A part of a PostgreSQL `ServerErrorMessage` was masked. |
+| `…/cause`, `…/next`, `…/suppressed` | The same, one link further down that chain — `jdbc:error/cause/detail` is the detail of the cause. |
+
+A hit in a database error arrives at `onUnannotatedPii`, never at `onScanned`. Nobody declares a
+server message as free text; it is the case that signal exists for, and downgrading it would be the
+one place worth paging someone going quiet.
+
 ## Using it without a DataSource
 
 `SqlExceptionSanitizer` is the same logic on a single exception, for code that catches one elsewhere —

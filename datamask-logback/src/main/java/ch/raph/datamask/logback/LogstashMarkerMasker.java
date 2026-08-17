@@ -124,7 +124,7 @@ final class LogstashMarkerMasker {
         for (Map.Entry<?, ?> entry : entries.entrySet()) {
             Object value = entry.getValue();
             // Keys are names a developer wrote, not data — same rule as MDC keys.
-            Object safe = context.maskValue(value, path + "." + entry.getKey());
+            Object safe = context.maskValue(value, path + "/" + entry.getKey());
             if (safe != value && masked == null) {
                 masked = new LinkedHashMap<>(entries);
             }

@@ -1,0 +1,118 @@
+name: Benchmarks
+
+# Never on push or pull_request. A full JMH run is tens of minutes, and a shared runner's
+# numbers are too noisy to gate a merge on — a benchmark that fails a PR for reasons nobody
+# can reproduce is a benchmark somebody deletes. The other workflows still *compile* the
+# module through `./gradlew build`, so a broken benchmark is caught at PR time; it is only
+# the running of them that lives here. `datamask-benchmarks:jmh` is deliberately not wired
+# into `check`, so `build` never triggers it — see datamask-benchmarks/build.gradle.
+on:
+  workflow_dispatch:
+    inputs:
+      harness-args:
+        description: 'JMH arguments (a benchmark-name regex, -f, -wi, -i …)'
+        required: false
+        default: '-f 1 -wi 3 -i 5 -r 1s -w 1s'
+      note:
+        description: 'Why this run — a change being measured, a suspicion being checked'
+        required: false
+        default: ''
+  # Monthly, to catch drift nobody was looking for: a dependency bump, a JDK change, a
+  # detector added without anyone thinking about the scan cost.
+  schedule:
+    - cron: '0 4 1 * *'
+
+# One benchmark run at a time. Two on the same repository would not interfere technically,
+# but a queued run costs nothing and a superseded one is wasted runner minutes.
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  jmh:
+    name: JMH
+    runs-on: ubuntu-latest
+    # A full set at the defaults in the code is ~15 minutes; the input can ask for far more.
+    timeout-minutes: 120
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      # Compiled separately so a compilation failure is reported as one, rather than as a
+      # benchmark run that produced nothing.
+      - name: Compile the benchmarks
+        run: ./gradlew :datamask-benchmarks:compileJava
+
+      # Both inputs reach the shell as environment variables rather than through `${{ }}`
+      # interpolation. A dispatch input is attacker-controlled text as far as this script is
+      # concerned, and interpolating it would splice it into the command line.
+      - name: Run JMH
+        id: jmh
+        env:
+          HARNESS_ARGS: ${{ inputs.harness-args || '-f 1 -wi 3 -i 5 -r 1s -w 1s' }}
+          RESULT_FILE: ${{ github.workspace }}/jmh-result.json
+        run: |
+          set -euo pipefail
+          echo "Running with: $HARNESS_ARGS"
+          ./gradlew :datamask-benchmarks:jmh \
+            -Pjmh.args="$HARNESS_ARGS -rf json -rff $RESULT_FILE"
+
+      - name: Summarise
+        if: ${{ !cancelled() && steps.jmh.outcome == 'success' }}
+        env:
+          HARNESS_ARGS: ${{ inputs.harness-args || '-f 1 -wi 3 -i 5 -r 1s -w 1s' }}
+          NOTE: ${{ inputs.note }}
+          COMMIT: ${{ github.sha }}
+          RESULT_FILE: ${{ github.workspace }}/jmh-result.json
+        run: |
+          set -euo pipefail
+          {
+            echo "### JMH — \`$COMMIT\`"
+            echo
+            if [ -n "$NOTE" ]; then printf '> %s\n\n' "$NOTE"; fi
+            echo "**Shared GitHub runner.** These numbers are comparable to *other runs of this"
+            echo "workflow* and to each other. They are **not** comparable to the baseline table in"
+            echo "\`docs/IMPROVEMENTS.md\`, which was taken on a quiet developer machine — a shared"
+            echo "runner has neighbours, and a single fork cannot see profile pollution."
+            echo
+            echo "Arguments: \`$HARNESS_ARGS\`"
+            echo
+            echo "| Benchmark | Score | ± | Unit |"
+            echo "|---|---:|---:|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # jq over JMH's own JSON rather than scraping stdout: the text output changes
+          # between JMH versions, the JSON schema does not. `scoreError` is the string
+          # "NaN" — not a number — whenever there are too few iterations to compute one,
+          # which is exactly what a quick `-i 1` run produces, so it is type-checked rather
+          # than arithmetic'd. The unit is read rather than assumed, because `-tu` can
+          # change it and a mislabelled table is worse than none.
+          jq -r '
+            def round2: . * 100 | round / 100;
+            sort_by(.primaryMetric.score)
+            | .[]
+            | "| `\(.benchmark | split(".") | .[-2:] | join("."))` "
+            + "| \(.primaryMetric.score | round2) "
+            + "| \(.primaryMetric.scoreError | if type == "number" then round2 else "n/a" end) "
+            + "| \(.primaryMetric.scoreUnit) |"
+          ' "$RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          # The run id, not just the commit: the monthly schedule runs the same commit more
+          # than once, and upload-artifact refuses a name that already exists.
+          name: jmh-result-${{ github.run_id }}-${{ github.sha }}
+          path: jmh-result.json
+          # A run that failed before JMH wrote anything has no file, and that is already
+          # reported as the failure it is — not worth failing the upload on top of it.
+          if-no-files-found: ignore
+          # Long, because the point of these is comparison over time. A run older than this
+          # should have been written into the table in docs/IMPROVEMENTS.md instead.
+          retention-days: 90

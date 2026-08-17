@@ -8,9 +8,20 @@ import tools.jackson.core.TokenStreamContext;
  * Runs the detectors over one string, and never lets that fail the document.
  *
  * <p>Shared by everything in this module that writes a string nobody declared: a property value, a
- * map key, a string inside a JSON tree.
+ * map key, a string inside a JSON tree. Declared free text never arrives here — the modifier gives
+ * such a property its own {@link MaskingSerializer}, and the engine routes a {@code SCAN} strategy
+ * to {@code TextSanitizer.sanitizeDeclared} itself. So every finding this class produces is one
+ * nobody classified, and {@code onUnannotatedPii} is the right signal for all of it.
+ *
+ * <p>This is also where the module's path grammar lives: {@code jackson:<site>[/<detail>]}, one
+ * scheme per module so a rule keying on the prefix can tell which integration reported a finding.
+ * The sites are {@code text}, {@code key}, {@code tree} and — for declared PII, built by
+ * {@link MaskingSerializerModifier} — the bean's own simple name.
  */
 final class TextScanner {
+
+    /** The scheme every path this module reports carries. */
+    static final String MODULE = "jackson";
 
     private final MaskingEngine engine;
 
@@ -37,33 +48,55 @@ final class TextScanner {
     }
 
     /**
-     * The enclosing property name, which is what an observer needs in order to find the field that
-     * leaked. Deliberately not the full JSON pointer: this runs on every string in every document,
-     * and building a pointer would allocate on each one.
+     * {@code jackson:<site>/<detail>}, or {@code jackson:<site>} when there is no detail to give.
+     *
+     * <p>The one place the scheme is written, so the module cannot drift into reporting half its
+     * findings under a prefix a SIEM rule does not recognise.
      */
-    static String pathOf(JsonGenerator generator) {
-        return nameFrom(generator.streamWriteContext(), "text");
+    static String path(String site, String detail) {
+        return detail == null ? MODULE + ":" + site : MODULE + ":" + site + "/" + detail;
     }
 
     /**
-     * The path for a map key, which starts one context out.
+     * {@code jackson:text/<property>} for a string nobody declared — the enclosing property name is
+     * what an observer needs in order to find the field that leaked. Deliberately not the full JSON
+     * pointer: this runs on every string in every document, and building a pointer would allocate
+     * on each one.
+     */
+    static String pathOf(JsonGenerator generator) {
+        return path("text", nameFrom(generator.streamWriteContext()));
+    }
+
+    /**
+     * {@code jackson:tree/<property>} for a value inside a {@code JsonNode}, which is a different
+     * kind of site from a typed property: nothing in the schema describes it, so a finding there
+     * says an upstream payload started carrying PII rather than that a field of ours did.
+     */
+    static String treePathOf(JsonGenerator generator) {
+        return path("tree", nameFrom(generator.streamWriteContext()));
+    }
+
+    /**
+     * {@code jackson:key/<property>} for a map key, whose enclosing name starts one context out.
      *
      * <p>The name currently set on the object being written is the <em>previous</em> key of the
      * same map — often the very PII this library exists to hide. Paths reach observers and
      * exception messages, so the enclosing property name is used instead, exactly as the engine
-     * keeps map paths positional.
+     * keeps map paths positional. The site already says the value was a key, so no {@code {key}}
+     * suffix is needed on top of it.
      */
     static String keyPathOf(JsonGenerator generator) {
         TokenStreamContext object = generator.streamWriteContext();
-        return nameFrom(object == null ? null : object.getParent(), "key") + "{key}";
+        return path("key", nameFrom(object == null ? null : object.getParent()));
     }
 
-    private static String nameFrom(TokenStreamContext start, String fallback) {
+    /** {@code null} when the value is being written outside any named property, such as at the root. */
+    private static String nameFrom(TokenStreamContext start) {
         for (TokenStreamContext context = start; context != null; context = context.getParent()) {
             if (context.hasCurrentName()) {
                 return context.currentName();
             }
         }
-        return fallback;
+        return null;
     }
 }

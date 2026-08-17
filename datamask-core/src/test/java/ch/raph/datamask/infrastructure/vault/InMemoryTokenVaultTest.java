@@ -67,7 +67,8 @@ class InMemoryTokenVaultTest {
         // the same value, and strand the loser in the reverse index — a mapping nothing could ever
         // evict, holding a raw IBAN for the life of the process.
         try (var threads = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            IntStream.range(0, 64).forEach(i -> threads.submit(() -> tokens.add(vault.tokenize(IBAN, PiiCategory.IBAN))));
+            IntStream.range(0, 64)
+                    .forEach(i -> threads.submit(() -> tokens.add(vault.tokenize(IBAN, PiiCategory.IBAN))));
         }
 
         assertThat(Set.copyOf(tokens)).hasSize(1);

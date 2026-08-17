@@ -6,12 +6,16 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import ch.raph.datamask.api.MaskStrategy;
+import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.application.DataMask;
+import ch.raph.datamask.domain.MaskingObserver;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -141,6 +145,48 @@ class StatementLoggingTest {
         insert(EMAIL, IBAN, 7);
 
         assertThat(captured.list).isEmpty();
+    }
+
+    @Test
+    @DisplayName("names each parameter's own site — jdbc:param/<index> — so an alert on unannotated PII "
+            + "says which parameter leaked rather than only that something did")
+    void reportsEachParameterAtItsOwnSite() throws SQLException {
+        List<String> reported = new ArrayList<>();
+        dataSource = new MaskingDataSource(
+                stubDataSource(),
+                DataMask.builder()
+                        .observer(new MaskingObserver() {
+                            @Override
+                            public void onUnannotatedPii(String path, PiiCategory category, String detector) {
+                                reported.add(path + " " + category);
+                            }
+                        })
+                        .build());
+
+        insert(EMAIL, IBAN, 7);
+
+        assertThat(reported).contains("jdbc:param/1 EMAIL", "jdbc:param/2 IBAN");
+    }
+
+    @Test
+    @DisplayName("reports an unrecognised parameter as a redaction against its own site too, so the "
+            + "parameter that was thrown away is still identifiable")
+    void reportsAnUnrecognisedParameterAtItsOwnSite() throws SQLException {
+        List<String> reported = new ArrayList<>();
+        dataSource = new MaskingDataSource(
+                stubDataSource(),
+                DataMask.builder()
+                        .observer(new MaskingObserver() {
+                            @Override
+                            public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
+                                reported.add(path + " " + category + " " + strategy);
+                            }
+                        })
+                        .build());
+
+        insert("Mustermann-9910-INTERNAL", IBAN, 7);
+
+        assertThat(reported).contains("jdbc:param/1 UNSPECIFIED REDACT");
     }
 
     /**

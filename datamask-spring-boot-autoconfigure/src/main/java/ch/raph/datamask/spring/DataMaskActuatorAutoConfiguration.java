@@ -29,7 +29,9 @@ public final class DataMaskActuatorAutoConfiguration {
      * ordering this ahead of everything else means no other function can be consulted about the key
      * before it has already been replaced.
      */
-    // REVERT CHECK: bean removed
-    @SuppressWarnings("unused")
-    private static final Class<?>[] UNUSED = {Bean.class, Order.class, Ordered.class};
+    @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE)
+    SanitizingFunction datamaskSecretSanitizingFunction() {
+        return new MaskSecretSanitizingFunction();
+    }
 }

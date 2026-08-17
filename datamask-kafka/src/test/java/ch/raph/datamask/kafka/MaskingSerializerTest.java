@@ -4,8 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ch.raph.datamask.application.DataMask;
+import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.kafka.testdomain.Payments;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.serialization.Serializer;
@@ -67,6 +70,27 @@ class MaskingSerializerTest {
         assertThatThrownBy(() -> serializer.serialize("payments", new Payments.Unrebuildable(IBAN, "x", 1)))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageNotContaining(IBAN);
+    }
+
+    @Test
+    @DisplayName("reports the failure under the path that names the site, not under the empty root the engine "
+            + "would otherwise use")
+    void reportsTheFailureUnderTheModulesPath() {
+        List<String> failures = new ArrayList<>();
+        DataMask observed = DataMask.builder()
+                .observer(new MaskingObserver() {
+                    @Override
+                    public void onFailure(String path, Throwable error) {
+                        failures.add(path);
+                    }
+                })
+                .build();
+        Serializer<Payments.Unrebuildable> serializer = new MaskingSerializer<>(new ToStringSerializer<>(), observed);
+
+        assertThatThrownBy(() -> serializer.serialize("payments", new Payments.Unrebuildable(IBAN, "x", 1)))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(failures).containsExactly("kafka:value/payments");
     }
 
     @Test

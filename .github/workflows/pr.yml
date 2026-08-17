@@ -32,20 +32,29 @@ jobs:
 
       # `build` runs spotlessCheck, the tests, the architecture rules and the 80% coverage gate,
       # so formatting, behaviour, structure and coverage are one gate rather than four a
-      # contributor can pass part of.
+      # contributor can pass part of. It compiles the JMH benchmarks but never runs them —
+      # see .github/workflows/benchmarks.yml and datamask-benchmarks/build.gradle.
       - name: Build
         run: ./gradlew build --info
 
-      # Runs even when the build failed, because failing the coverage gate is exactly when
-      # the report is worth reading.
+      # Both run even when the build failed, because a failed gate is exactly when its report
+      # is worth reading.
+      - name: Publish the test results
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/test-report
+
       - name: Publish the coverage report
         if: ${{ !cancelled() }}
         uses: ./.github/actions/coverage-report
 
+      # The summary above carries the failures; this is the browsable HTML and the raw JUnit
+      # XML, for a failure that needs the whole trace or a tool that wants to parse it.
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
-          path: "**/build/reports/tests/test"
+          path: |
+            **/build/reports/tests/test
+            **/build/test-results/*/*.xml
           retention-days: 7

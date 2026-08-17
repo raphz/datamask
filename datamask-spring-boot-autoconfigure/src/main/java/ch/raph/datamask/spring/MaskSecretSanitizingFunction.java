@@ -44,7 +44,7 @@ final class MaskSecretSanitizingFunction implements SanitizingFunction {
 
     @Override
     public Predicate<SanitizableData> filter() {
-        return data -> false; // REVERT CHECK
+        return data -> isKeyMaterial(data.getKey());
     }
 
     @Override
@@ -54,6 +54,7 @@ final class MaskSecretSanitizingFunction implements SanitizingFunction {
 
     /** Package-private so the rule can be asserted key by key rather than only through an endpoint. */
     static boolean isKeyMaterial(String key) {
-        return KEY_MATERIAL.matcher(key).matches() && !NOT_KEY_MATERIAL.matcher(key).matches();
+        return KEY_MATERIAL.matcher(key).matches()
+                && !NOT_KEY_MATERIAL.matcher(key).matches();
     }
 }

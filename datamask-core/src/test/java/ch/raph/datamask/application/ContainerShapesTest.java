@@ -29,15 +29,22 @@ class ContainerShapesTest {
     private final DataMask dataMask =
             DataMask.builder().secret("a-test-secret-of-sufficient-length").build();
 
-    record WithDeque(Deque<String> events, @PII(category = PiiCategory.EMAIL) String email) {}
+    record WithDeque(
+            Deque<String> events,
+            @PII(category = PiiCategory.EMAIL) String email) {}
 
-    record WithConcurrentMap(ConcurrentMap<String, String> byId, @PII(category = PiiCategory.EMAIL) String email) {}
+    record WithConcurrentMap(
+            ConcurrentMap<String, String> byId,
+            @PII(category = PiiCategory.EMAIL) String email) {}
 
-    record WithBuilder(StringBuilder note, @PII(category = PiiCategory.EMAIL) String email) {}
+    record WithBuilder(
+            StringBuilder note,
+            @PII(category = PiiCategory.EMAIL) String email) {}
 
     record WithOptional(@PII(category = PiiCategory.EMAIL) Optional<String> email) {}
 
-    record WithOptionalInt(@PII(category = PiiCategory.NATIONAL_ID) OptionalInt reference) {}
+    record WithOptionalInt(
+            @PII(category = PiiCategory.NATIONAL_ID) OptionalInt reference) {}
 
     record Clean(Optional<String> note, String country) {}
 
@@ -118,7 +125,8 @@ class ContainerShapesTest {
     @Test
     @DisplayName("PII in a URI query string is scanned, and the member stays a URI")
     void scansUriQuery() {
-        WithUri masked = dataMask.mask(new WithUri(URI.create("https://api.example.com/cb?email=john.doe@example.com")));
+        WithUri masked =
+                dataMask.mask(new WithUri(URI.create("https://api.example.com/cb?email=john.doe@example.com")));
 
         assertThat(masked.callback()).isNotNull();
         assertThat(masked.callback().toString())
@@ -180,7 +188,9 @@ class ContainerShapesTest {
     @Test
     @DisplayName("a masked null is dropped from a collection that refuses nulls, not thrown out of the whole graph")
     void dropsNullFromNullHostileCollection() {
-        record Item(@PII(strategy = MaskStrategy.NULLIFY, category = PiiCategory.EMAIL) String email) {}
+        record Item(
+                @PII(strategy = MaskStrategy.NULLIFY, category = PiiCategory.EMAIL)
+                String email) {}
         record Holder(Deque<Item> items) {}
 
         Deque<Item> items = new ArrayDeque<>(List.of(new Item("john.doe@example.com")));

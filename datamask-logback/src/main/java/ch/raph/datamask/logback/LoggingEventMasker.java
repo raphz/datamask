@@ -51,11 +51,35 @@ import org.slf4j.helpers.MessageFormatter;
  * the <em>same instance</em> when nothing was masked, so this class compares references and forwards
  * the original event. A PII-free log line passes through with only the scan itself to pay for.
  *
+ * <h2>The paths reported to the observer</h2>
+ *
+ * Every path this module hands a {@link MaskingObserver} is {@code logback:<logger>/<site>}, the
+ * grammar every integration shares — the scheme names the module, so a SIEM rule can tell a leak in a
+ * log line from one in a Kafka record without parsing the rest:
+ *
+ * <pre>{@code
+ * logback:com.acme.Payments/message            the message template
+ * logback:com.acme.Payments/arg0               the first argument
+ * logback:com.acme.Payments/arg0.iban          a declared field inside it
+ * logback:com.acme.Payments/mdc/customerId     one MDC entry
+ * logback:com.acme.Payments/kv/iban            one key-value pair
+ * logback:com.acme.Payments/throwable          the exception message
+ * logback:com.acme.Payments/throwable/cause    one level down the cause chain
+ * logback:com.acme.Payments/marker/customer    a logstash appending marker
+ * logback:com.acme.Payments/event              the event as a whole, when masking it failed
+ * }</pre>
+ *
+ * The engine appends object-graph members with a dot, which is where {@code arg0.iban} comes from;
+ * everything this class names itself is a slash-separated detail.
+ *
  * <p>Thread-safe, and never throws: a masking failure is reported to the {@link MaskingObserver} and
  * yields an event with the message withheld. A logging call must not fail the business operation, and
  * must not fall back to the text it could not mask.
  */
 public final class LoggingEventMasker {
+
+    /** The scheme every path this module reports starts with. */
+    private static final String SCHEME = "logback:";
 
     private final MaskingEngine engine;
     private final MaskingObserver observer;
@@ -87,19 +111,24 @@ public final class LoggingEventMasker {
             // Includes the MaskingException that FailureMode.THROW raises. Aborting a database
             // write on a bad value is right; aborting a log statement is not, so the event is
             // withheld instead of thrown — and withheld, not passed through.
-            observer.onFailure(event.getLoggerName(), failure);
+            observer.onFailure(origin(event) + "/event", failure);
             return MaskedLoggingEvent.withheld(event, engine.policy().redactionPlaceholder());
         }
     }
 
+    /** The scheme and the logger every site of this event is reported under. */
+    private static String origin(ILoggingEvent event) {
+        return SCHEME + event.getLoggerName();
+    }
+
     private ILoggingEvent maskEvent(ILoggingEvent event) {
-        String origin = event.getLoggerName();
+        String origin = origin(event);
 
         Object[] arguments = event.getArgumentArray();
         Object[] maskedArguments = maskArguments(arguments, origin);
 
         String message = event.getMessage();
-        String maskedMessage = scan(message, origin + ".message");
+        String maskedMessage = scan(message, origin + "/message");
 
         Map<String, String> mdc = event.getMDCPropertyMap();
         Map<String, String> maskedMdc = maskMdc(mdc, origin);
@@ -108,7 +137,7 @@ public final class LoggingEventMasker {
         List<KeyValuePair> maskedKeyValuePairs = maskKeyValuePairs(keyValuePairs, origin);
 
         IThrowableProxy throwable = event.getThrowableProxy();
-        IThrowableProxy maskedThrowable = maskThrowable(throwable, origin + ".exception", 0);
+        IThrowableProxy maskedThrowable = maskThrowable(throwable, origin + "/throwable", 0);
 
         List<Marker> markerList = event.getMarkerList();
         List<Marker> maskedMarkers = markers.mask(markerList, origin);
@@ -152,7 +181,7 @@ public final class LoggingEventMasker {
         Object[] masked = null;
         for (int i = 0; i < arguments.length; i++) {
             Object argument = arguments[i];
-            Object safe = maskArgument(argument, origin + ".arg" + i);
+            Object safe = maskArgument(argument, origin + "/arg" + i);
             if (safe != argument && masked == null) {
                 // Not clone(): a caller may have passed a typed array as the varargs, and a masked
                 // value of another type would be an ArrayStoreException in a copy of that type.
@@ -185,7 +214,9 @@ public final class LoggingEventMasker {
             String safe = scan(rendered, path);
             return safe == rendered ? argument : safe;
         }
-        return engine.mask(argument);
+        // Rooted at the site rather than at the argument's type, so a finding inside the graph is
+        // reported as logback:<logger>/arg0.iban and traces back to the call that logged it.
+        return engine.mask(argument, path);
     }
 
     /**
@@ -199,7 +230,7 @@ public final class LoggingEventMasker {
         Map<String, String> masked = null;
         for (Map.Entry<String, String> entry : mdc.entrySet()) {
             String value = entry.getValue();
-            String safe = scan(value, origin + ".mdc." + entry.getKey());
+            String safe = scan(value, origin + "/mdc/" + entry.getKey());
             if (safe != value && masked == null) {
                 masked = new LinkedHashMap<>(mdc);
             }
@@ -218,7 +249,7 @@ public final class LoggingEventMasker {
         List<KeyValuePair> masked = null;
         for (int i = 0; i < pairs.size(); i++) {
             KeyValuePair pair = pairs.get(i);
-            Object safe = maskArgument(pair.value, origin + ".kv." + pair.key);
+            Object safe = maskArgument(pair.value, origin + "/kv/" + pair.key);
             if (safe != pair.value && masked == null) {
                 masked = new ArrayList<>(pairs);
             }
@@ -240,8 +271,9 @@ public final class LoggingEventMasker {
             return throwable;
         }
         if (depth > engine.policy().maxDepth()) {
-            // Bounded like the engine's own traversal. Cutting the chain short discloses nothing;
-            // following an unbounded one would turn a log statement into an outage.
+            // A cause chain and a suppressed exception are both nesting, so this really is the depth
+            // limit. Cutting the chain short discloses nothing; following an unbounded one would turn
+            // a log statement into an outage.
             observer.onDepthLimitExceeded(path);
             return null;
         }
@@ -252,7 +284,7 @@ public final class LoggingEventMasker {
         String maskedOverriding = scan(overriding, path);
 
         IThrowableProxy cause = throwable.getCause();
-        IThrowableProxy maskedCause = maskThrowable(cause, path + ".cause", depth + 1);
+        IThrowableProxy maskedCause = maskThrowable(cause, path + "/cause", depth + 1);
 
         IThrowableProxy[] suppressed = throwable.getSuppressed();
         IThrowableProxy[] maskedSuppressed = maskSuppressed(suppressed, path, depth);
@@ -266,18 +298,30 @@ public final class LoggingEventMasker {
         return new MaskedThrowableProxy(throwable, maskedMessage, maskedOverriding, maskedCause, maskedSuppressed);
     }
 
+    /**
+     * The suppressed list is a container, not another level of nesting, so it is bounded by
+     * {@code maxCollectionElements} and the cut is reported as a truncation against the container's
+     * own path — a try-with-resources in a loop is a volume problem, and saying "depth exceeded" once
+     * per dropped element told nothing downstream how many there were.
+     */
     private IThrowableProxy[] maskSuppressed(IThrowableProxy[] suppressed, String path, int depth) {
         if (suppressed == null || suppressed.length == 0) {
             return suppressed;
         }
+        int kept = Math.min(suppressed.length, engine.policy().maxCollectionElements());
         IThrowableProxy[] masked = null;
-        for (int i = 0; i < suppressed.length; i++) {
-            IThrowableProxy safe = maskThrowable(suppressed[i], path + ".suppressed" + i, depth + 1);
+        if (kept < suppressed.length) {
+            observer.onCollectionTruncated(path + "/suppressed", kept);
+            masked = new IThrowableProxy[kept];
+            System.arraycopy(suppressed, 0, masked, 0, kept);
+        }
+        for (int i = 0; i < kept; i++) {
+            IThrowableProxy safe = maskThrowable(suppressed[i], path + "/suppressed/" + i, depth + 1);
             if (safe != suppressed[i] && masked == null) {
                 // Not clone(): logback hands out a ThrowableProxy[], and storing a masked proxy in it
                 // would be an ArrayStoreException. The copy is declared to hold the interface.
-                masked = new IThrowableProxy[suppressed.length];
-                System.arraycopy(suppressed, 0, masked, 0, suppressed.length);
+                masked = new IThrowableProxy[kept];
+                System.arraycopy(suppressed, 0, masked, 0, kept);
             }
             if (masked != null) {
                 masked[i] = safe;

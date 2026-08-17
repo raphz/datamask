@@ -57,9 +57,7 @@ class ShortMaskSecretFailureAnalyzerTest {
 
         assertThat(report).doesNotContain(SHORT_SECRET);
         for (int length = 2; length <= SHORT_SECRET.length(); length++) {
-            assertThat(report)
-                    .as("a prefix of the secret")
-                    .doesNotContain(SHORT_SECRET.substring(0, length));
+            assertThat(report).as("a prefix of the secret").doesNotContain(SHORT_SECRET.substring(0, length));
         }
         // The only number in the report is the requirement, which was already public.
         assertThat(report.replace("16", "")).doesNotContainPattern("[0-9]");

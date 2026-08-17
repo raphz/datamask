@@ -16,6 +16,9 @@ postgresql = "42.7.11"
 # Annotations only, and compileOnly everywhere, so this never reaches a published POM.
 jspecify = "1.0.1"
 testcontainers = "2.0.5"
+# Not Boot-managed, and deliberately so: JMH reaches datamask-benchmarks only, which is never
+# published, so it can never appear in an application's dependency graph.
+jmh = "1.37"
 junit = "6.0.3"
 assertj = "3.27.7"
 archunit = "1.4.1"
@@ -56,6 +59,11 @@ spring-boot-actuator = { module = "org.springframework.boot:spring-boot-actuator
 # auto-configurations, CompositeMeterRegistryAutoConfiguration). Test-only: the ordering bug it
 # guards against is invisible when a MeterRegistry is registered as a plain user bean.
 spring-boot-micrometer-metrics = { module = "org.springframework.boot:spring-boot-micrometer-metrics", version.ref = "springBoot" }
+
+# The benchmark harness and the annotation processor that writes its generated runners. Both are
+# confined to datamask-benchmarks.
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-generator-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }

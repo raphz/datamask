@@ -28,7 +28,8 @@ property. That covers strings inside lists, map values, map keys, `JsonNode` tre
 `CharSequence`s and the root of the document — places no property-level hook can reach — so an IBAN
 that ended up in a free-text field is still caught. Each hit is reported to
 `MaskingObserver.onUnannotatedPii`, the earliest warning that a field has started carrying PII nobody
-classified.
+classified — never `onScanned`, which belongs to text somebody declared as free text. See
+[Which observer signal, and why](#which-observer-signal-and-why).
 
 The second half follows `MaskingPolicy#scanUnannotatedText` and disappears entirely when it is off.
 Properties the plan already decided on never reach it: they are given their own serializer.
@@ -61,6 +62,65 @@ Out of scope, deliberately:
   PII, and the serializer writes to the generator directly. Add `@PII` and masking outranks it.
 - **`@JsonRawValue` and anything else written raw**, which bypasses every serializer.
 - **Deserialization**, see below.
+
+## The paths an observer sees
+
+Every path this module reports follows the shared grammar, `<module>:<site>[/<detail>]` — documented
+once in the core README, and the reason a SIEM rule keying on the prefix can tell a Jackson finding
+from a JDBC or a Kafka one. Before this, a masked property was reported as a bare `Customer.iban`,
+indistinguishable from what `DataMask.mask()` produces when an application masks the same object
+itself.
+
+| Site | Path | What it was |
+|---|---|---|
+| The bean's own name | `jackson:Customer/iban` | A property the compiled `MaskPlan` decided on |
+| `text` | `jackson:text/reference` | A string nobody declared, in the named property |
+| `text` | `jackson:text` | The same, written outside any property — the root of the document, or an array element there |
+| `key` | `jackson:key/attributes` | A map key, whose enclosing property is one context out |
+| `tree` | `jackson:tree/payload` | A string anywhere inside a `JsonNode` |
+| `tree` | `jackson:tree/payload{key}` | A property *name* inside that tree; `{key}` is the engine's own convention |
+
+The detail is the enclosing **property** name, never a JSON pointer and never a map key. A pointer
+would allocate on every string in every document; a key is very often the identifier this library
+exists to hide, and a path reaches observers and exception messages.
+
+## Which observer signal, and why
+
+`onUnannotatedPii` is the alert-worthy one — a field nobody classified has started carrying PII —
+and it stays that way only if nothing else is reported through it.
+
+- **Declared free text** (`FREEFORM_TEXT`, or `@PII(strategy = SCAN)`) is reported to
+  **`onScanned`**. Those findings are the scanner doing the job it was asked to do. Such a property
+  never reaches this module's scanning serializers at all: the modifier gives it its own serializer
+  and the engine routes it to `TextSanitizer.sanitizeDeclared`.
+- **Everything the detectors reach here** — an unannotated string, a map key, a `JsonNode` — is
+  reported to **`onUnannotatedPii`**.
+
+A finding inside a `JsonNode` belongs in the second group, which is worth spelling out because a
+tree looks like free text. It is not *declared* free text: a `JsonNode` member says the **shape** is
+unknown, never anything about the content, and a property that did declare its content never
+arrives there. So a hit in a tree is precisely the actionable case — an upstream payload has started
+carrying PII and the contract needs a policy — and it hangs off the `scanUnannotatedText` switch
+accordingly.
+
+`onCollectionTruncated` is never fired by this module: Jackson writes collections itself, and the
+engine only ever sees one declared value at a time here.
+
+## Dropping a property outright
+
+`MaskAction.Drop` is the only form of masking that leaves no trace of the field in the document —
+not even a `null` saying it exists. A deployment asks for it through `PolicyOverrides`:
+
+```java
+DataMask.builder()
+        .secret(secret)
+        .overrides(PolicyOverrides.builder().drop(Party.class, "reference").build())
+        .build();
+```
+
+The drop is decided **before** `@NoMask`: an exemption is the code author's claim that a member is
+harmless, an override is the deployment disagreeing, and the deployment is the one being audited.
+A dropped property stays absent through `@JsonUnwrapped` too, prefix and all.
 
 ## Three decisions worth knowing about
 
@@ -108,7 +168,10 @@ auto-configuration that already holds one.
 
 ## Tests
 
-40 tests, asserting the raw value is **absent from the document** rather than only that the masked form
+48 tests, asserting the raw value is **absent from the document** rather than only that the masked form
 is present, and covering the fail-closed paths: a broken masker yields the placeholder under `REDACT`,
 aborts the document under `THROW` when the property was declared, and withholds the string when the
 scanner reached it — with the value in no exception message and in no observer path.
+
+The path grammar has a test per site, plus one that sweeps every signal and asserts nothing is
+reported without the `jackson:` scheme.

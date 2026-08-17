@@ -20,6 +20,7 @@ import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -486,6 +487,13 @@ class SqlExceptionSanitizerTest {
     @DisplayName("reporting to the observer")
     class Observing {
 
+        /**
+         * The module's path grammar: {@code <module>:<site>[/<detail>]}. The scheme is what lets a
+         * rule downstream tell a JDBC leak from a Kafka or a Jackson one without parsing prose, so
+         * it is asserted rather than left to inspection.
+         */
+        private static final Pattern JDBC_PATH = Pattern.compile("jdbc:(error|param)(/[A-Za-z0-9]+)*");
+
         @Test
         @DisplayName("reports PII found in a database error as unannotated, which is the signal that "
                 + "production data reached a log line")
@@ -507,7 +515,31 @@ class SqlExceptionSanitizerTest {
                             .message("invalid input syntax for type integer: \"" + IBAN + "\"")
                             .build());
 
-            assertThat(reported).anyMatch(entry -> entry.contains("IBAN"));
+            assertThat(reported).anyMatch(entry -> entry.startsWith("jdbc:error/message ") && entry.contains("IBAN"));
+        }
+
+        @Test
+        @DisplayName("keeps a database error on onUnannotatedPii rather than onScanned: nobody declared a "
+                + "server message as free text, so a hit in one is still the alert-worthy signal")
+        void doesNotDowngradeADatabaseErrorToOnScanned() {
+            List<String> scanned = new ArrayList<>();
+            DataMask observed = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onScanned(String path, PiiCategory category, String detector) {
+                            scanned.add(path);
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(observed)
+                    .sanitize(ServerErrors.builder()
+                            .severity("ERROR")
+                            .state("22P02")
+                            .message("invalid input syntax for type integer: \"" + IBAN + "\"")
+                            .build());
+
+            assertThat(scanned).isEmpty();
         }
 
         @Test
@@ -525,7 +557,91 @@ class SqlExceptionSanitizerTest {
 
             new SqlExceptionSanitizer(observed).sanitize(ServerErrors.uniqueViolation(EMAIL));
 
-            assertThat(reported).anyMatch(entry -> entry.contains("UNSPECIFIED") && entry.contains("REDACT"));
+            assertThat(reported)
+                    .anyMatch(entry -> entry.startsWith("jdbc:error/detail ")
+                            && entry.contains("UNSPECIFIED")
+                            && entry.contains("REDACT"));
+        }
+
+        @Test
+        @DisplayName("prefixes every site it names with the jdbc scheme, down every chain it walks, so a "
+                + "rule keyed on the prefix can tell this module's findings from another's")
+        void namesEverySiteWithTheModuleScheme() {
+            SQLException head =
+                    new SQLException("could not execute statement", "23505", 0, ServerErrors.uniqueViolation(EMAIL));
+            head.setNextException(new SQLException("Duplicate entry '" + EMAIL + "' for key 'k'", "23000", 1062));
+            head.addSuppressed(new SQLException("rollback abandoned for " + IBAN, "40001"));
+
+            List<String> paths = recordedPaths(head);
+
+            assertThat(paths)
+                    .isNotEmpty()
+                    .allMatch(path -> JDBC_PATH.matcher(path).matches(), "jdbc:<site>[/<detail>]");
+            assertThat(paths)
+                    .anyMatch(path -> path.startsWith("jdbc:error/next"))
+                    .anyMatch(path -> path.startsWith("jdbc:error/suppressed"))
+                    .anyMatch(path -> path.startsWith("jdbc:error/cause"));
+        }
+
+        @Test
+        @DisplayName("reports the failure of the sanitiser itself against the error site, not the empty "
+                + "string, so the redaction that follows is attributable")
+        void namesTheSiteOfItsOwnFailure() {
+            List<String> reported = new ArrayList<>();
+            DataMask broken = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onFailure(String path, Throwable error) {
+                            reported.add(path);
+                        }
+                    })
+                    .detector(new PiiDetector() {
+                        @Override
+                        public String name() {
+                            return "broken";
+                        }
+
+                        @Override
+                        public List<PiiFinding> detect(CharSequence text) {
+                            throw new IllegalStateException("detector is broken");
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(broken).sanitize(ServerErrors.uniqueViolation(EMAIL));
+
+            assertThat(reported).contains("jdbc:error");
+        }
+
+        /** Every path reported through any callback while sanitising one error and its chains. */
+        private static List<String> recordedPaths(SQLException head) {
+            List<String> paths = new ArrayList<>();
+            DataMask observed = DataMask.builder()
+                    .observer(new MaskingObserver() {
+                        @Override
+                        public void onMasked(String path, PiiCategory category, MaskStrategy strategy) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onUnannotatedPii(String path, PiiCategory category, String detector) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onScanned(String path, PiiCategory category, String detector) {
+                            paths.add(path);
+                        }
+
+                        @Override
+                        public void onFailure(String path, Throwable error) {
+                            paths.add(path);
+                        }
+                    })
+                    .build();
+
+            new SqlExceptionSanitizer(observed).sanitize(head);
+            return paths;
         }
     }
 }

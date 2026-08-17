@@ -91,6 +91,23 @@ only matches numbers written with a `+`).
 is the earliest warning that a new field is leaking**, and alerting on it is what turns this library
 from a mask into a control. Keep it wired through every integration; never make it silent.
 
+**Do not route anything else through it.** A value explicitly declared `FREEFORM_TEXT` or `SCAN`
+produces detector hits on every single request — that is the feature working — and reporting those
+here made the signal fire constantly, which is how a signal stops being alerted on. Declared text
+goes to `onScanned`, via `TextSanitizer.sanitizeDeclared`; undeclared text goes to
+`onUnannotatedPii`, via `sanitize`. When adding an integration, ask which one each site is and say so
+in a comment: every integration so far is `onUnannotatedPii`, because nothing a log line, a bind
+parameter, a Kafka header or an untyped `JsonNode` carries was ever declared as free text.
+
+`onCollectionTruncated` is likewise separate from `onDepthLimitExceeded`. A deep graph and a runaway
+collection want different responses, and reporting both as depth — under a synthesised index that
+differed between the list and map cases — meant neither could be counted.
+
+**Every path carries a scheme.** `<module>:<site>[/<detail>]`, documented in `datamask-core/README.md`.
+An integration handing a whole object to the engine must use `MaskingEngine.mask(value, rootPath)`,
+not `mask(value)`: the root is the one site it cannot otherwise name, and a structural failure there
+is reported against the empty string, which no rule can attribute.
+
 `MaskingObserver` implementations run on the masking hot path and must be cheap and non-throwing.
 
 ## 7. Exceptions must not become the leak
@@ -103,7 +120,18 @@ to any new diagnostic, log line or error added anywhere in this library.
 Masking returns a copy. The caller is still using the original — it is the live domain object the
 business logic is operating on.
 
-## 9. Things that look like simplifications but are not
+## 9. An override outranks the code's author
+
+`PolicyOverrides.drop(Type.class, "member")` is decided **before** `@NoMask`, and that order is
+deliberate. `@NoMask` is a claim by whoever wrote the class that a member holds nothing personal; an
+override is the deployment saying otherwise. The deployment is the one being audited, so it wins.
+Reversing this would let an annotation nobody re-reviewed veto a control someone configured
+deliberately.
+
+A drop is not the same as masking to a placeholder: the member is left out entirely, so a serializer
+omits the property and not even its existence is disclosed.
+
+## 10. Things that look like simplifications but are not
 
 - The no-change short-circuit in `descendObject` (`changed ? rebuild : value`) is what makes
   unrebuildable PII-free types work and what avoids allocating on clean graphs.
@@ -133,9 +161,23 @@ business logic is operating on.
   fragment, and `maskSpan` redacts any non-confident finding outright. Dropping overlapped findings
   whole would disclose their tails; format-masking a fragment would reveal characters at positions
   chosen for a whole value.
+- `Masker.supports` is asked about the value's **runtime** class, not the declared type of the member
+  it came from. A member declared `Object` or `CharSequence` says nothing about what a masker must
+  handle, and a masker answering "no" is replaced by full redaction — so asking about the declared
+  type quietly redacted values that had a working masker. This is not a weakening: the fallback is
+  still redaction, and the declared type still decides what the result has to fit.
 - The never-partially-reveal guard exists in three layers on purpose: `PiiDescriptor` (keep = 0 and
   CRITICAL sensitivity), `MaskingEngine.hardened` (revealing strategies become REDACT), and the
   first line of every revealing masker. Removing any one of them is not a cleanup.
+
+## Bound every container you walk
+
+The engine bounds collections and maps at `maxCollectionElements`, but an integration that walks a
+structure of its own has to do it too, and the ones that forgot were not obvious. A suppressed
+exception list is the worked example: a batch failing item by item suppresses one exception per item,
+each with its own cause chain, and both logging modules walked all of them. If you are iterating
+something whose size the application controls, bound it and report `onCollectionTruncated`. Dropping
+the tail discloses nothing; not bounding it turns a log statement into an outage.
 
 ## Reviewing a change here
 

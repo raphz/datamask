@@ -71,7 +71,11 @@ Implementations need a public no-argument constructor, or must be registered exp
 DataMask.builder().masker(new ContractReferenceMasker(dependency)).build();
 ```
 
-`supports(Class<?>)` defaults to `true`; override it to decline types the masker cannot handle.
+`supports(Class<?>)` defaults to `true`; override it to decline types the masker cannot handle. It is
+asked about the value's **runtime class**, not the type its member was declared as — a member declared
+`Object` says nothing about what an implementation would have to handle. Declining sends the value to
+full redaction, so decline only what you genuinely cannot mask; `MaskContext.declaredType()` is where
+to read what the result has to fit back into.
 
 A masker that throws yields the redaction placeholder, never the value it failed to mask.
 

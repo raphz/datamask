@@ -36,6 +36,7 @@ class ModuleDependencyTest {
     private static final String INFRASTRUCTURE = ROOT + ".infrastructure..";
     private static final String PROCESSOR = ROOT + ".processor..";
     private static final String SPRING = ROOT + ".spring..";
+    private static final String BENCHMARKS = ROOT + ".benchmarks..";
 
     /** {@code javax} covers the parts of the platform that never moved out of it, such as {@code javax.crypto}. */
     private static final List<String> JDK = List.of("java..", "javax..");
@@ -66,7 +67,7 @@ class ModuleDependencyTest {
      * named as this test's rules name modules.
      */
     private static final List<String> MODULES_WITH_THEIR_OWN_RULE =
-            List.of("api", "domain", "application", "infrastructure", "processor", "spring");
+            List.of("api", "domain", "application", "infrastructure", "processor", "spring", "benchmarks");
 
     /** Test classes are excluded, so every rule describes the bytecode that actually ships. */
     private static final JavaClasses LIBRARY = new ClassFileImporter()
@@ -160,6 +161,43 @@ class ModuleDependencyTest {
                         // declares as a bean.
                         List.of("org.springframework..", "org.slf4j..", "io.micrometer..", "tools.jackson..")));
         onlyDependOn(List.of(SPRING), allowed);
+    }
+
+    @Test
+    @DisplayName("the benchmarks see both logging integrations and reach into infrastructure, which is what "
+            + "measuring costs, and they are held to that list so the cost of a measurement stays visible")
+    void benchmarksMeasureTheLibraryAndNothingElse() {
+        // Not a row in integrations(): datamask-benchmarks is not a framework integration, it is
+        // measurement code, and an integration row would be both too narrow and the wrong shape.
+        //
+        // Wider than any integration on two counts, and both are the point rather than a concession.
+        // It names *two* integrations at once, because the headline number is logback's masking
+        // appender against the appender underneath it and the same question has to be asked of
+        // log4j2 in the same run to be comparable. And it reaches into `infrastructure`, which every
+        // integration is forbidden from doing, because measuring ReflectiveMaskPlanCompiler against
+        // GeneratedMaskPlanCompiler means naming both adapters — that comparison is the whole reason
+        // datamask-build-processor exists, and there is no way to state it through `application`.
+        //
+        // What makes the width safe is that this module is never published. It applies
+        // datamask.java-base-conventions, so it has no route to Maven Central and no application can
+        // depend on it, which means none of this coupling can reach anyone. The rule is still worth
+        // having: it holds the benchmarks to DataMask's own packages plus JMH and the two logging
+        // frameworks, so a benchmark cannot quietly grow a dependency on something else and start
+        // measuring it. Adding a package here should mean a new thing is being measured.
+        List<String> allowed = and(
+                and(and(BASELINE, CORE), BENCHMARKS),
+                List.of(
+                        // The harness, and the runners its annotation processor generates beside
+                        // each benchmark class.
+                        "org.openjdk.jmh..",
+                        // The two integrations under measurement, and the frameworks whose event
+                        // types the benchmarks have to build in order to have something to measure.
+                        ROOT + ".logback..",
+                        ROOT + ".log4j2..",
+                        "ch.qos.logback..",
+                        "org.slf4j..",
+                        "org.apache.logging.log4j.."));
+        onlyDependOn(List.of(BENCHMARKS), allowed);
     }
 
     @TestFactory

@@ -8,7 +8,13 @@ DataMask dataMask = DataMask.builder().secret(System.getenv("DATAMASK_SECRET")).
 Customer safe = dataMask.mask(customer);
 String safeText = dataMask.maskText(supportNote);
 List<PiiFinding> found = dataMask.scan(payload);
+
+// One value whose category you already know — a header, a query parameter, a map entry.
+Object safeHeader = dataMask.maskValue(accountNumber, PiiCategory.IBAN, "http:header/x-account");
 ```
+
+`null` in gives `null` back everywhere, and `scan` of null or empty text has no findings rather than
+throwing.
 
 Instances are immutable and thread-safe, and are meant to be created once per application.
 
@@ -77,6 +83,28 @@ high-sensitivity data and leaves prose alone — card numbers and credentials st
 common enough shape that leaving keys alone in production was the wrong default; the cost is that
 masking a key changes lookup semantics in the masked copy, which is why `relaxed()` still skips it.
 
+### Overrides, for classes you cannot annotate
+
+`PolicyOverrides` redeclares masking from outside the code being masked — a DTO regenerated from an
+OpenAPI contract on every build, a third-party model you cannot touch at all.
+
+```java
+PolicyOverrides.builder()
+        .member(AccountDto.class, "iban", PiiDescriptor.of(PiiCategory.IBAN))
+        .type(CustomerRef.class, PiiDescriptor.of(PiiCategory.CUSTOMER_ID))
+        .drop(AuditRecord.class, "rawPayload")
+        .build();
+```
+
+`drop` is the strongest of the three: the member is left out of the masked copy rather than masked
+into it. A record rebuilds with `null` in its place, and a serializer omits the property outright, so
+not even the field's existence is disclosed. It also **beats `@NoMask`** — that annotation is a claim
+by the code's author that a member holds nothing personal, and an override is the deployment
+disagreeing. The deployment is the one being audited.
+
+An override switches compile-time plan generation off for the types it reaches, because a plan
+resolved before the override existed would silently ignore it.
+
 ## Content detection
 
 Annotations cover the data a developer knew about. Detectors cover the rest: the payment reference a
@@ -89,6 +117,49 @@ scanning becomes unusable in production, and somebody turns it off; that is the 
 
 Every detector hit on unannotated data is reported to `MaskingObserver.onUnannotatedPii`. **That is
 the signal worth alerting on**, because it is the earliest warning that a new field is leaking.
+
+Order is priority: overlapping findings resolve earliest-start, then longest, then position in the
+detector list. `.detector(x)` appends, so a built-in wins any tie; `.detectorFirst(x)` puts yours
+ahead of them. That distinction is the difference between an institution-specific reference format
+being recognised and being reported as a payment card forever, because it happens to pass Luhn.
+
+## What the observer is told
+
+| Signal | Fires when | Alert on it? |
+|---|---|---|
+| `onUnannotatedPii` | a detector found PII in a value **nobody declared** | **yes** — a field is leaking |
+| `onScanned` | a detector found PII inside a value declared `FREEFORM_TEXT` or `SCAN` | no — the design working |
+| `onMasked` | a declared PII value was masked | count it |
+| `onFailure` | masking failed and the `FailureMode` was applied | yes |
+| `onDepthLimitExceeded` | the graph was deeper than `maxDepth` | a modelling surprise |
+| `onCollectionTruncated` | a collection or map was cut at `maxCollectionElements` | a volume surprise |
+
+The first two are the split that matters. A support-note field annotated as free text produces
+detector hits on every request by design, and reporting those as unannotated PII made the one signal
+worth paging on fire constantly — so it stopped being paged on. The last two were one method with a
+synthesised index that differed between the list and map cases (`path[7]` against `path{7}`), so
+nothing downstream could group them.
+
+### The path grammar
+
+Every signal carries a path, and it is the path that makes the signal actionable. Paths from
+`DataMask.mask()` are the graph position — `Customer.iban`, `Portfolio.holdings[3].iban`. Paths from
+an **integration** carry a scheme, so a rule can tell one source from another:
+
+```
+<module>:<site>[/<detail>]
+
+kafka:value/payments          jdbc:param/2            logback:com.acme.Ledger/arg0
+kafka:header/payments/x-user  jdbc:error/detail       log4j2:com.acme.Ledger/mdc/tenant
+jackson:Account/iban          jdbc:error/cause        logback:com.acme.Ledger/throwable
+```
+
+Scheme is the module. Site is what kind of thing it was. Detail is slash-separated. Where an
+integration hands a whole object to the engine it passes its own path as the root — `MaskingEngine`
+takes one on `mask(value, path)` — so the members underneath append with a dot
+(`kafka:value/payments.iban`) and a failure at the root is still attributable. Without that, a
+structural failure was reported against the empty string, which is exactly the case a SIEM rule
+needs to see.
 
 ## Types it can mask
 
@@ -117,6 +188,12 @@ The original object is never mutated: the caller is still using it.
 
 A `MaskPlan` is derived per class and cached in a `ClassValue`, so after the first instance masking is
 a handful of `MethodHandle` invocations plus one constructor call.
+
+**Annotating is the fast path, not a tax.** Masking a graph whose members are declared costs about
+2.5 µs; masking the same graph shape with nothing declared costs about 12.5 µs. A declared member is
+masked straight from its declaration, while an undeclared string has to be offered to every detector.
+Content scanning, not the walk, is where the time goes — the same graph with scanning off costs
+620 ns. Numbers and their caveats are in [`datamask-benchmarks`](../datamask-benchmarks/README.md).
 
 `MaskPlanCompiler` is a port with two implementations, and `DataMask.builder()` picks between them.
 `ReflectiveMaskPlanCompiler` is the one just described. `GeneratedMaskPlanCompiler` answers from plans

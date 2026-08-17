@@ -1,9 +1,12 @@
 package ch.raph.datamask.kafka;
 
 import ch.raph.datamask.application.DataMask;
-import java.util.Objects;
+import ch.raph.datamask.application.InstalledDataMask;
+import ch.raph.datamask.application.ResolvedMasker;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Where a serializer or interceptor named in a producer's configuration finds its {@link DataMask}.
@@ -23,6 +26,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * so a producer created before the install still picks it up, from the next record on. Until then
  * masking runs under strict defaults and an ephemeral key: everything is masked, but a {@code HASH}
  * pseudonym will not match one produced after the install.
+ *
+ * <p>The hand-off itself is {@link InstalledDataMask}, shared with the logging integrations, and the
+ * resolution per record is {@link ResolvedMasker}. Read the first for what a static field means where
+ * several deployments share a classloader — the caveat this module inherits rather than restates.
  *
  * <h2>Configuration keys</h2>
  *
@@ -64,26 +71,55 @@ public final class DataMaskKafka {
     /** The same for {@code value.serializer}. */
     public static final String VALUE_DELEGATE_CONFIG = "datamask.value.serializer";
 
-    private static final AtomicReference<DataMask> INSTALLED = new AtomicReference<>();
+    private static final Logger LOG = LoggerFactory.getLogger("ch.raph.datamask.kafka");
+
+    private static final InstalledDataMask INSTALLED = InstalledDataMask.holder();
 
     private DataMaskKafka() {}
 
     /** Makes this instance the one every plugin without its own will use. */
     public static void install(DataMask dataMask) {
-        INSTALLED.set(Objects.requireNonNull(dataMask, "dataMask"));
+        INSTALLED.install(dataMask);
     }
 
     public static Optional<DataMask> installed() {
-        return Optional.ofNullable(INSTALLED.get());
+        return INSTALLED.installed();
     }
 
     /** Forgets the installed instance. For tests, and for a container shutting down. */
     public static void uninstall() {
-        INSTALLED.set(null);
+        INSTALLED.uninstall();
     }
 
-    /** The nullable form, for the plugins: this is read on every record. */
-    static DataMask current() {
-        return INSTALLED.get();
+    /**
+     * What a plugin Kafka built by name masks with, resolved per record: whatever was installed here,
+     * else a fallback of strict masking under an ephemeral key.
+     *
+     * <p>The fallback is loud and it is safe. Everything is masked; what an ephemeral key costs is that
+     * a {@code HASH} pseudonym differs between instances and after a restart, which removes the reason
+     * to prefer it over {@code REDACT} — a pseudonymised customer id stops correlating across the topic.
+     *
+     * <p>The settings a plugin read out of its client's configuration are captured here rather than
+     * held by the resolver, because they belong to the {@link RecordMasker} being built and not to the
+     * lookup. The result is cached against the installed instance, so the fallback is built once rather
+     * than per record and a late install is still picked up on the next one.
+     */
+    static ResolvedMasker<RecordMasker> resolving(boolean maskKeys, Set<String> redactedHeaders) {
+        return ResolvedMasker.installed(
+                INSTALLED,
+                dataMask -> new RecordMasker(dataMask.engine(), maskKeys, redactedHeaders),
+                DataMaskKafka::ephemeralFallback);
+    }
+
+    /**
+     * Reported through SLF4J rather than through the core, so the warning stays where the integration
+     * is: what a missing install costs is specific to Kafka's own hand-off, and naming it is what turns
+     * an unconfigured producer into a fixed one. It names no value and no secret.
+     */
+    private static DataMask ephemeralFallback() {
+        LOG.error("datamask: no DataMask installed for the Kafka client; masking with strict defaults and an"
+                + " ephemeral key, so pseudonyms will not be comparable across restarts or between instances."
+                + " Call DataMaskKafka.install(...) during startup.");
+        return DataMask.withDefaults();
     }
 }

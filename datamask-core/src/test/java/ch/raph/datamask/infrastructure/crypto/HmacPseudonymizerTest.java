@@ -42,7 +42,8 @@ class HmacPseudonymizerTest {
         // rotation silently turns every record written before it into an unjoinable stranger.
         assertThat(afterRotation.matches(IBAN, issuedBefore)).isTrue();
         assertThat(afterRotation.pseudonymize(IBAN)).isNotEqualTo(issuedBefore);
-        assertThat(afterRotation.matches(IBAN, afterRotation.pseudonymize(IBAN))).isTrue();
+        assertThat(afterRotation.matches(IBAN, afterRotation.pseudonymize(IBAN)))
+                .isTrue();
     }
 
     @Test
