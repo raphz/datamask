@@ -43,6 +43,7 @@ public final class PiiProcessor extends AbstractProcessor {
     private PartialRevealCheck partialReveal;
     private JustificationCheck justification;
     private RebuildableTypeCheck rebuildable;
+    private IneffectivePiiCheck ineffective;
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
@@ -63,6 +64,7 @@ public final class PiiProcessor extends AbstractProcessor {
         this.partialReveal = new PartialRevealCheck(reporter);
         this.justification = new JustificationCheck(reporter);
         this.rebuildable = new RebuildableTypeCheck(types, reporter);
+        this.ineffective = new IneffectivePiiCheck(reporter);
     }
 
     @Override
@@ -76,6 +78,7 @@ public final class PiiProcessor extends AbstractProcessor {
                 AnnotationSite.of(element, PII.class).ifPresent(site -> {
                     customMasker.check(site);
                     partialReveal.check(site, element.getAnnotation(PII.class));
+                    ineffective.check(site);
                 });
                 ownerOf(element).ifPresent(owners::add);
             }
@@ -111,24 +114,35 @@ public final class PiiProcessor extends AbstractProcessor {
     private static List<Element> declarationsAnnotatedWith(
             RoundEnvironment round, Class<? extends Annotation> annotation) {
         return round.getElementsAnnotatedWith(annotation).stream()
-                .filter(PiiProcessor::isDeclarationSite)
+                .filter(element -> isDeclarationSite(element, annotation))
                 .map(Element.class::cast)
                 .toList();
     }
 
-    private static boolean isDeclarationSite(Element element) {
+    private static boolean isDeclarationSite(Element element, Class<? extends Annotation> annotation) {
         return switch (element.getKind()) {
             case PARAMETER -> false;
-            case FIELD, METHOD -> !isRecordComponentCopy(element);
+            case FIELD, METHOD -> !isRecordComponentCopy(element, annotation);
             default -> true;
         };
     }
 
-    private static boolean isRecordComponentCopy(Element element) {
+    /**
+     * Whether javac put <em>this</em> annotation here itself, by copying it off the record component
+     * of the same name.
+     *
+     * <p>The annotation has to be on the component for that to be what happened. A hand-written
+     * accessor carrying an annotation its component does not have was written by someone on purpose,
+     * and treating it as a copy meant the checks never ran on it — a {@code @NoMask} with a blank
+     * justification on such an accessor went through in silence, which is the one exemption in this
+     * library that must not.
+     */
+    private static boolean isRecordComponentCopy(Element element, Class<? extends Annotation> annotation) {
         return element.getEnclosingElement() instanceof TypeElement owner
                 && owner.getKind() == ElementKind.RECORD
                 && ElementFilter.recordComponentsIn(owner.getEnclosedElements()).stream()
-                        .anyMatch(component -> component.getSimpleName().contentEquals(element.getSimpleName()));
+                        .filter(component -> component.getSimpleName().contentEquals(element.getSimpleName()))
+                        .anyMatch(component -> component.getAnnotation(annotation) != null);
     }
 
     /**

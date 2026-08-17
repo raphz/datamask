@@ -135,12 +135,17 @@ class PlanEquivalenceTest {
         }
 
         @Test
-        @DisplayName("and every plan that was generated is listed in META-INF/services, because a plan the "
-                + "service loader cannot see is a plan that silently did nothing")
-        void everyPlanIsRegistered() {
-            List<String> registered = generation.serviceFile().lines().toList();
-
-            assertThat(registered).hasSize(generated.size()).allMatch(name -> name.endsWith("_MaskPlan"));
+        @DisplayName("and every plan is named after the type it describes and sits in that type's package, "
+                + "because the name is the only thing that connects the two")
+        void everyPlanIsNamedAfterItsType() {
+            assertThat(generation.sources()).isNotEmpty();
+            generation
+                    .sources()
+                    .forEach((name, source) -> assertThat(name)
+                            .as("the generated plan %s", name)
+                            .endsWith("_MaskPlan")
+                            .startsWith("ch.raph.datamask.plan.testdomain."));
+            assertThat(generation.sources()).hasSameSizeAs(generated);
         }
     }
 

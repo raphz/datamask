@@ -19,11 +19,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
 
 @DisplayName("Each integration is wired up when its module is on the classpath, and left alone otherwise")
 class IntegrationAutoConfigurationTest {
@@ -186,6 +188,49 @@ class IntegrationAutoConfigurationTest {
         }
 
         @Test
+        @DisplayName("wraps last, so a pool decorator or a tracing proxy has already had its say and the "
+                + "masking ends up outermost rather than underneath something free to re-expose the driver")
+        void runsLast() {
+            withDataSource.run(context -> {
+                Object processor = context.getBean(MaskingDataSourceBeanPostProcessor.class);
+                assertThat(processor).isInstanceOf(Ordered.class);
+                assertThat(((Ordered) processor).getOrder()).isEqualTo(Ordered.LOWEST_PRECEDENCE);
+            });
+        }
+
+        @Test
+        @DisplayName("sits outside a post-processor that decorated the pool first, so an error from the "
+                + "decorated pool still passes through the masking on its way out")
+        void wrapsOutsideAnEarlierDecorator() {
+            withDataSource.withUserConfiguration(PoolDecorator.class).run(context -> {
+                MaskingDataSource masked = (MaskingDataSource) context.getBean(DataSource.class);
+                assertThat(masked.delegate()).isInstanceOf(DecoratedDataSource.class);
+            });
+        }
+
+        @Test
+        @DisplayName("leaves a named DataSource bean unwrapped, which is the escape hatch for the injection "
+                + "point that wants the pool's own type and cannot be changed")
+        void excludedBeanIsLeftAlone() {
+            runner.withUserConfiguration(TwoDataSources.class)
+                    .withPropertyValues("datamask.jdbc.excluded-beans=reportingDataSource")
+                    .run(context -> {
+                        assertThat(context.getBean("primaryDataSource")).isInstanceOf(MaskingDataSource.class);
+                        assertThat(context.getBean("reportingDataSource")).isNotInstanceOf(MaskingDataSource.class);
+                    });
+        }
+
+        @Test
+        @DisplayName(
+                "excludes nothing by default, so forgetting the property cannot be what leaves a pool " + "unmasked")
+        void nothingIsExcludedByDefault() {
+            runner.withUserConfiguration(TwoDataSources.class).run(context -> {
+                assertThat(context.getBean("primaryDataSource")).isInstanceOf(MaskingDataSource.class);
+                assertThat(context.getBean("reportingDataSource")).isInstanceOf(MaskingDataSource.class);
+            });
+        }
+
+        @Test
         @DisplayName("offers the sanitizer on its own, for an exception that reached a @ControllerAdvice "
                 + "rather than the driver")
         void exposesTheSanitizer() {
@@ -219,6 +264,61 @@ class IntegrationAutoConfigurationTest {
         @Bean
         DataSource dataSource() {
             return new NoConnectionDataSource();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TwoDataSources {
+
+        @Bean
+        DataSource primaryDataSource() {
+            return new NoConnectionDataSource();
+        }
+
+        @Bean
+        DataSource reportingDataSource() {
+            return new NoConnectionDataSource();
+        }
+    }
+
+    /**
+     * Stands in for a pool decorator or a tracing proxy: another post-processor that wraps
+     * DataSources. Declared by its concrete type on purpose — Spring buckets post-processors by the
+     * type the bean definition advertises, so a factory method returning {@code BeanPostProcessor}
+     * would hide the {@code Ordered} and land in the unordered group.
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class PoolDecorator {
+
+        @Bean
+        static OrderedDecorator decorator() {
+            return new OrderedDecorator();
+        }
+    }
+
+    static final class OrderedDecorator implements BeanPostProcessor, Ordered {
+
+        @Override
+        public Object postProcessAfterInitialization(Object bean, String beanName) {
+            return bean instanceof NoConnectionDataSource pool ? new DecoratedDataSource(pool) : bean;
+        }
+
+        @Override
+        public int getOrder() {
+            return Ordered.HIGHEST_PRECEDENCE;
+        }
+    }
+
+    static final class DecoratedDataSource extends NoConnectionDataSource {
+
+        private final DataSource delegate;
+
+        DecoratedDataSource(DataSource delegate) {
+            this.delegate = delegate;
+        }
+
+        DataSource delegate() {
+            return delegate;
         }
     }
 

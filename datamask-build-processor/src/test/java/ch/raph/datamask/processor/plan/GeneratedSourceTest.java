@@ -52,6 +52,32 @@ class GeneratedSourceTest {
     }
 
     @Nested
+    @DisplayName("How it announces itself")
+    class Provenance {
+
+        @Test
+        @DisplayName("every plan carries @Generated naming this processor, which is what lets a coverage gate "
+                + "exclude code an adopter cannot write a test for")
+        void everyPlanIsMarkedGenerated() {
+            assertThat(sources).isNotEmpty();
+            sources.forEach((name, source) -> assertThat(source)
+                    .as("the generated source of %s", name)
+                    .contains("@javax.annotation.processing.Generated("
+                            + "\"ch.raph.datamask.processor.plan.MaskPlanProcessor\")"));
+        }
+
+        @Test
+        @DisplayName("and carries no date, because the same input has to produce the same file or the build "
+                + "cache never hits and every plan diff is noise")
+        void nothingIsStamped() {
+            sources.forEach((name, source) -> assertThat(source)
+                    .as("the generated source of %s", name)
+                    .doesNotContain("date =", "date=")
+                    .doesNotContain(String.valueOf(java.time.Year.now().getValue())));
+        }
+    }
+
+    @Nested
     @DisplayName("How members are reached")
     class Access {
 

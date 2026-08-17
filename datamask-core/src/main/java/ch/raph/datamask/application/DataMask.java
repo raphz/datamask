@@ -13,11 +13,12 @@ import ch.raph.datamask.infrastructure.crypto.HmacPseudonymizer;
 import ch.raph.datamask.infrastructure.crypto.MaskKey;
 import ch.raph.datamask.infrastructure.detect.Detectors;
 import ch.raph.datamask.infrastructure.generated.GeneratedMaskPlanCompiler;
-import ch.raph.datamask.infrastructure.vault.InMemoryTokenVault;
+import ch.raph.datamask.infrastructure.vault.RejectingTokenVault;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * The entry point.
@@ -81,6 +82,15 @@ public final class DataMask {
         return pseudonymizer.pseudonymize(value);
     }
 
+    /**
+     * Whether a pseudonym stands for this value — including one issued under a key this deployment
+     * has since rotated away from, which is what makes a rotation something other than a break in
+     * every join. Recomputes rather than reverses; a surrogate stays one-way.
+     */
+    public boolean pseudonymMatches(String value, String pseudonym) {
+        return pseudonymizer instanceof HmacPseudonymizer hmac && hmac.matches(value, pseudonym);
+    }
+
     /** Resolves a token issued by {@link MaskStrategy#TOKENIZE}. */
     public Optional<String> detokenize(String token) {
         return vault == null ? Optional.empty() : vault.detokenize(token);
@@ -102,14 +112,17 @@ public final class DataMask {
     public static final class Builder {
 
         private MaskKey key;
+        private final List<MaskKey> previousKeys = new ArrayList<>();
         private MaskingPolicy policy = MaskingPolicy.strict();
         private TokenVault vault;
         private MaskingObserver observer = MaskingObserver.NOOP;
         private PolicyOverrides overrides = PolicyOverrides.none();
         private MaskPlanCompiler compiler;
         private List<PiiDetector> detectors;
-        private final List<Runnable> maskerRegistrations = new ArrayList<>();
-        private final MaskerRegistry maskers = MaskerRegistry.withDefaults();
+        // Recorded rather than applied, so each build() can replay them onto a registry of its own.
+        // A registry shared across builds would let a masker registered after one build() change
+        // how an already-created DataMask masks — action at a distance, in a security library.
+        private final List<Consumer<MaskerRegistry>> maskerRegistrations = new ArrayList<>();
 
         private Builder() {}
 
@@ -119,9 +132,36 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * The same, from a {@code char[]} — worth preferring, because a {@code String} secret cannot
+         * be wiped and stays readable in any heap dump taken before it is collected.
+         */
+        public Builder secret(char[] secret) {
+            this.key = MaskKey.ofSecret(secret);
+            return this;
+        }
+
         public Builder key(MaskKey key) {
             this.key = Objects.requireNonNull(key, "key");
             return this;
+        }
+
+        /**
+         * A key this deployment has rotated away from. Repeatable.
+         *
+         * <p>Pseudonyms carry the id of the key that issued them, so one issued before a rotation
+         * can still be confirmed against the value it stands for — see
+         * {@link #pseudonymMatches(String, String)}. Keep a previous key for as long as data
+         * pseudonymised under it is still being joined, and no longer.
+         */
+        public Builder previousKey(MaskKey previous) {
+            previousKeys.add(Objects.requireNonNull(previous, "previous"));
+            return this;
+        }
+
+        /** A secret this deployment has rotated away from, derived the same way {@link #secret(String)} is. */
+        public Builder previousSecret(String previous) {
+            return previousKey(MaskKey.ofSecret(previous));
         }
 
         public Builder policy(MaskingPolicy policy) {
@@ -129,6 +169,10 @@ public final class DataMask {
             return this;
         }
 
+        /**
+         * The vault behind {@link MaskStrategy#TOKENIZE}. Without one, tokenisation refuses and the
+         * value is redacted instead — see {@link RejectingTokenVault} for why that is the default.
+         */
         public Builder vault(TokenVault vault) {
             this.vault = vault;
             return this;
@@ -175,23 +219,24 @@ public final class DataMask {
 
         /** Replaces a built-in strategy, for an institution-specific account or reference format. */
         public Builder masker(MaskStrategy strategy, Masker masker) {
-            maskerRegistrations.add(() -> maskers.register(strategy, masker));
+            maskerRegistrations.add(registry -> registry.register(strategy, masker));
             return this;
         }
 
         /** Registers a custom masker instance, for implementations without a no-argument constructor. */
         public Builder masker(Masker masker) {
-            maskerRegistrations.add(() -> maskers.register(masker));
+            maskerRegistrations.add(registry -> registry.register(masker));
             return this;
         }
 
         public DataMask build() {
             MaskKey resolvedKey = key != null ? key : MaskKey.ephemeral();
-            TokenVault resolvedVault = vault != null ? vault : new InMemoryTokenVault();
-            Pseudonymizer pseudonymizer = new HmacPseudonymizer(resolvedKey);
+            TokenVault resolvedVault = vault != null ? vault : RejectingTokenVault.INSTANCE;
+            Pseudonymizer pseudonymizer = new HmacPseudonymizer(resolvedKey, previousKeys);
             List<PiiDetector> resolvedDetectors = detectors != null ? detectors : Detectors.defaults();
 
-            maskerRegistrations.forEach(Runnable::run);
+            MaskerRegistry maskers = MaskerRegistry.withDefaults();
+            maskerRegistrations.forEach(registration -> registration.accept(maskers));
 
             MaskingPolicy effectivePolicy = policy;
             MaskContextFactory contexts = (descriptor, strategy, path, declaredType) -> new DefaultMaskContext(

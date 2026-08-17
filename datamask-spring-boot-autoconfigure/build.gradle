@@ -19,6 +19,9 @@ dependencies {
     compileOnly project(':datamask-jdbc')
     compileOnly project(':datamask-kafka')
     compileOnly libs.micrometer.core
+    // Actuator is optional in the same way: without it there is no /env and no /configprops, and
+    // nothing to keep datamask.secret out of.
+    compileOnly libs.spring.boot.actuator
 
     annotationProcessor libs.spring.boot.configuration.processor
 
@@ -28,6 +31,7 @@ dependencies {
     testImplementation project(':datamask-jdbc')
     testImplementation project(':datamask-kafka')
     testImplementation libs.micrometer.core
+    testImplementation libs.spring.boot.actuator
     testImplementation libs.spring.boot.test
     // Boot's real metrics auto-configuration chain, so the ordering test runs the same
     // condition-evaluation sequence a Boot application does.

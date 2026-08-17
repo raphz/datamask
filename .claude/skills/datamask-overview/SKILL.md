@@ -17,7 +17,7 @@ public record Customer(
         String country) { }
 
 Customer safe = dataMask.mask(customer);
-// Customer[email=Email[value=j*******@e******.com], iban=~7Kd9fPqR2xLmA0Zt, country=CH]
+// Customer[email=Email[value=j*******@e******.com], iban=~a3Kd9Q:7fPqR2xLmA0Ztb1Xw, country=CH]
 ```
 
 The target industry is **banking and fintech**, with Swiss specifics (AVS/AHV numbers, Swiss IBANs)
@@ -50,7 +50,7 @@ language and API features freely — `javax.crypto.KDF` (HKDF), record patterns,
 | `datamask-logback` | **implemented** | Masking appender: log arguments, message bodies, MDC, exception messages |
 | `datamask-log4j2` | **implemented** | Rewrite policy + pattern converter |
 | `datamask-opentelemetry` | scaffolded, empty | Span attributes, events, log records before export |
-| `datamask-kafka` | **implemented** | Masking serializer + producer interceptor, headers included |
+| `datamask-kafka` | **implemented** | Masking serializer, Streams serde, producer and consumer interceptors, headers included |
 | `datamask-jdbc` | **implemented** | PostgreSQL error details **and** bind parameters |
 | `datamask-jpa` | scaffolded, empty | `AttributeConverter`s for pseudonymised columns at rest |
 | `datamask-ai` | scaffolded, empty | Prompt sanitisation with reversible placeholders |

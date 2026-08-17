@@ -49,4 +49,55 @@ class MaskKeyTest {
     void toStringHidesMaterial() {
         assertThat(MaskKey.ofSecret(SECRET).toString()).doesNotContain(SECRET).contains("hidden");
     }
+
+    @Test
+    @DisplayName("derives the same key from a char[] as from the equivalent String")
+    void charArrayDerivesTheSameKey() {
+        assertThat(MaskKey.ofSecret(SECRET.toCharArray()).spec().getEncoded())
+                .isEqualTo(MaskKey.ofSecret(SECRET).spec().getEncoded());
+    }
+
+    @Test
+    @DisplayName("gives the same secret the same key id everywhere, with nothing to configure")
+    void keyIdIsDerivedFromTheMaterial() {
+        assertThat(MaskKey.ofSecret(SECRET).id())
+                .isEqualTo(MaskKey.ofSecret(SECRET).id());
+        assertThat(MaskKey.ofSecret(SECRET).id())
+                .isNotEqualTo(MaskKey.ofSecret(SECRET + "-rotated").id());
+    }
+
+    @Test
+    @DisplayName("the key id discloses nothing about the secret")
+    void keyIdIsNotTheSecret() {
+        MaskKey key = MaskKey.ofSecret(SECRET);
+
+        assertThat(key.id())
+                .hasSize(6)
+                .doesNotContain(SECRET)
+                .isNotEqualTo(java.util.Base64.getUrlEncoder()
+                        .withoutPadding()
+                        .encodeToString(key.spec().getEncoded()));
+    }
+
+    @Test
+    @DisplayName("derives a different key per purpose, so one leak does not join two datasets")
+    void purposeKeysDiverge() {
+        MaskKey key = MaskKey.ofSecret(SECRET);
+
+        assertThat(key.forPurpose("export").spec().getEncoded())
+                .isNotEqualTo(key.forPurpose("support").spec().getEncoded())
+                .isNotEqualTo(key.spec().getEncoded());
+        assertThat(key.forPurpose("export").id())
+                .isEqualTo(MaskKey.ofSecret(SECRET).forPurpose("export").id());
+    }
+
+    @Test
+    @DisplayName("wipes its material on destroy and refuses to be used afterwards")
+    void destroyZeroesTheMaterial() {
+        MaskKey key = MaskKey.ofSecret(SECRET);
+        key.destroy();
+
+        assertThat(key.isDestroyed()).isTrue();
+        assertThatThrownBy(key::spec).isInstanceOf(IllegalStateException.class).hasMessageContaining("destroyed");
+    }
 }

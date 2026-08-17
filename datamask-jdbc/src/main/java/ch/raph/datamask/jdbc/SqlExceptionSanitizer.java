@@ -5,6 +5,7 @@ import ch.raph.datamask.application.MaskingEngine;
 import ch.raph.datamask.domain.FailureMode;
 import ch.raph.datamask.domain.MaskingException;
 import ch.raph.datamask.domain.MaskingObserver;
+import java.sql.BatchUpdateException;
 import java.sql.SQLDataException;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
@@ -40,6 +41,19 @@ import java.util.Objects;
  * The constraint name, the table, the column, the SQL state and the stack trace: everything needed
  * to know what failed, without the value that failed. A rewritten error reads
  * {@code Key (email)=(****) already exists.}
+ *
+ * <h2>Drivers other than PostgreSQL</h2>
+ *
+ * MySQL, MariaDB and H2 have no such structure: they quote the offending value in single quotes and
+ * say nothing else about it. So for the two SQL state classes whose errors are about a value — 22,
+ * data exception, and 23, integrity constraint violation — the single-quoted spans are redacted as
+ * well, and {@code Duplicate entry 'john@x.com' for key 'customer.email_uq'} becomes
+ * {@code Duplicate entry '****' for key 'customer.email_uq'}. The key and column names survive; see
+ * {@code SqlErrorText} for how they are told apart from the value.
+ *
+ * <p>A {@link BatchUpdateException} stays one, update counts included. They say which statement in
+ * a batch failed, which is a row position rather than row data, and Hibernate and Spring both read
+ * them to decide what to do next.
  *
  * <h2>What is returned</h2>
  *
@@ -114,13 +128,15 @@ public final class SqlExceptionSanitizer {
             return redactedEntirely(original);
         }
 
-        Throwable head = sanitizeMessage(original, path, false);
-        boolean changed = head != original;
-
+        // The cause is sanitised before the message because a replacement may have to take it at
+        // construction: BatchUpdateException carries its update counts only through a constructor
+        // that also fixes the cause, and a cause fixed by a constructor cannot be set again.
         // A Throwable whose cause is itself means "no cause"; treating it as one would recurse.
         Throwable cause = original.getCause() == original ? null : original.getCause();
         Throwable newCause = cause == null ? null : rewrite(cause, path + "/cause", depth + 1);
-        changed |= newCause != cause;
+
+        Throwable head = sanitizeMessage(original, path, false, newCause);
+        boolean changed = head != original || newCause != cause;
 
         SQLException next = original instanceof SQLException sqle && sqle.getNextException() != original
                 ? sqle.getNextException()
@@ -141,8 +157,8 @@ public final class SqlExceptionSanitizer {
 
         // Something below needed rewriting even though the message here did not, and a cause cannot
         // be swapped into an existing exception — so a copy has to be made either way.
-        Throwable result = head != original ? head : sanitizeMessage(original, path, true);
-        if (newCause != null) {
+        Throwable result = head != original ? head : sanitizeMessage(original, path, true, newCause);
+        if (newCause != null && result.getCause() != newCause) {
             result.initCause(newCause);
         }
         if (newNext != null && result instanceof SQLException sqle) {
@@ -154,17 +170,24 @@ public final class SqlExceptionSanitizer {
         return result;
     }
 
-    /** One link, its chain ignored: the same instance when its own message was already clean. */
-    private Throwable sanitizeMessage(Throwable original, String path, boolean force) {
+    /**
+     * One link, its chain ignored: the same instance when its own message was already clean.
+     *
+     * <p>{@code cause} is the already-sanitised cause, needed here only because a replacement whose
+     * constructor takes one has to be given it at construction.
+     */
+    private Throwable sanitizeMessage(Throwable original, String path, boolean force, Throwable cause) {
         if (original instanceof SQLException exception) {
             if (POSTGRES_DRIVER_PRESENT && PostgresErrorSanitizer.handles(exception)) {
                 return PostgresErrorSanitizer.sanitize(exception, text, path, force);
             }
-            String message = text.primary(exception.getMessage(), path);
+            String message = quotesValues(exception)
+                    ? text.primaryWithQuotedValues(exception.getMessage(), path)
+                    : text.primary(exception.getMessage(), path);
             if (!force && Objects.equals(message, exception.getMessage())) {
                 return exception;
             }
-            return standardFor(exception, message);
+            return standardFor(exception, message, cause);
         }
 
         // Not a database exception — an I/O failure under the driver, say. Its text is scanned, and
@@ -183,12 +206,12 @@ public final class SqlExceptionSanitizer {
      * of the standard subclasses is derived from it: class 23 is an integrity constraint violation
      * whatever driver reported it.
      */
-    private SQLException standardFor(SQLException original, String message) {
+    private SQLException standardFor(SQLException original, String message, Throwable cause) {
         String state = original.getSQLState();
-        String sqlClass = state == null || state.length() < 2 ? "" : state.substring(0, 2);
         int code = original.getErrorCode();
-        SQLException replacement =
-                switch (sqlClass) {
+        SQLException replacement = original instanceof BatchUpdateException batch
+                ? batchFor(batch, message, state, code, cause)
+                : switch (stateClass(state)) {
                     case "23" -> new SQLIntegrityConstraintViolationException(message, state, code);
                     case "22" -> new SQLDataException(message, state, code);
                     case "42" -> new SQLSyntaxErrorException(message, state, code);
@@ -198,6 +221,40 @@ public final class SqlExceptionSanitizer {
                     default -> new SQLException(message, state, code);
                 };
         return copyStackTrace(replacement, original);
+    }
+
+    /**
+     * A batch failure stays a batch failure, with its update counts carried across.
+     *
+     * <p>A count is a row <em>position</em> — which statement in the batch succeeded, which one is
+     * {@code EXECUTE_FAILED} — never row data, so carrying it discloses nothing, and dropping it
+     * breaks the callers that read it: Hibernate's batch error handling and Spring's, both of which
+     * ask which entry failed. The standard subclass for the SQL state is deliberately not used
+     * here; the driver threw a {@code BatchUpdateException} and code catching one still has to see
+     * one.
+     *
+     * <p>{@code getLargeUpdateCounts} is the constructor argument because it is the wider of the
+     * two views: the class derives {@code getUpdateCounts} from it exactly as it would have derived
+     * it in the original, so both accessors come back the same. That constructor also fixes the
+     * cause, which is why the sanitised cause has to arrive here rather than be set afterwards.
+     */
+    private static BatchUpdateException batchFor(
+            BatchUpdateException original, String message, String state, int code, Throwable cause) {
+        return new BatchUpdateException(message, state, code, original.getLargeUpdateCounts(), cause);
+    }
+
+    /**
+     * Whether the driver is expected to have quoted a row value in this message. Class 22 is a data
+     * exception and class 23 an integrity constraint violation: those are the errors that are about
+     * a value, and they are the ones every driver answers by quoting it.
+     */
+    private static boolean quotesValues(SQLException exception) {
+        String sqlClass = stateClass(exception.getSQLState());
+        return "22".equals(sqlClass) || "23".equals(sqlClass);
+    }
+
+    private static String stateClass(String state) {
+        return state == null || state.length() < 2 ? "" : state.substring(0, 2);
     }
 
     /**

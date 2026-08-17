@@ -11,8 +11,8 @@ dependencies {
 ```
 
 That line is the whole wiring. No configuration, no code change, and nothing new on the runtime
-classpath: the plans are emitted next to the types they describe, listed in `META-INF/services`, and
-picked up by the compiler `DataMask.builder()` already uses.
+classpath: each plan is emitted next to the type it describes and named after it — `Customer` gets
+`Customer_MaskPlan` — and the compiler `DataMask.builder()` already uses asks for it by that name.
 
 ## What it replaces
 
@@ -33,6 +33,7 @@ whichever request happens to be first. That is exactly where a p99 is measured.
 The generated source for a record is what you would have written by hand:
 
 ```java
+@javax.annotation.processing.Generated("ch.raph.datamask.processor.plan.MaskPlanProcessor")
 public final class Customer_MaskPlan implements GeneratedMaskPlan {
 
     public java.lang.Class<?> type() { return com.acme.Customer.class; }
@@ -136,11 +137,21 @@ the only difference between the two that would actually matter.
 
 ## Incremental builds
 
-The processor declares itself **aggregating** to Gradle. `Filer` cannot append to a resource, so the
-one `META-INF/services` file has to be written once and has to be complete. An isolating processor
-would be handed only the changed sources on an incremental build and would rewrite that file with a
-fraction of the plans in it, leaving the rest unreachable and their types quietly back on the
-reflective path.
+The processor declares itself **isolating** to Gradle, which it can only be because there is no
+index. Each plan is written from one type, named after it, and declares that type as its single
+originating element — so Gradle knows which source file each generated plan belongs to and can
+regenerate or delete exactly that one.
+
+This was aggregating while the processor wrote a `META-INF/services` file listing every plan, and
+that was a correctness problem rather than a performance one. `Filer` cannot append to a resource, so
+the index had to be rewritten whole on every build — while an incremental build shows the processor
+only the sources that changed. It would rewrite the index with a fraction of the plans in it and put
+every untouched type silently back on the reflective path, worst of all for the wrapper types nobody
+edits and everything masks. Looking a plan up by name shares no state between two types, so there is
+nothing left for an incremental round to truncate.
+
+Plans registered through `ServiceLoader` are still honoured and still take precedence, so a
+hand-written `GeneratedMaskPlan` keeps working.
 
 ## Non-goals
 

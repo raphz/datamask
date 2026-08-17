@@ -36,6 +36,11 @@ pseudonymisation under GDPR Article 4(5)**.
   HMAC key — a configured secret is a human-chosen passphrase, and using it directly would let one
   known (value, pseudonym) pair brute-force it offline. Do not remove the derivation; changing the
   salt or info strings changes every pseudonym.
+- **Every pseudonym names the key that made it** — `~<keyId>:<digest>`, the id HKDF-derived from the
+  material so two processes agree with nothing configured. Do not remove it and do not shorten the
+  format: without the id, a key rotation silently turns every previously written pseudonym into an
+  unjoinable stranger — no error, nothing in a log. `HmacPseudonymizer.matches` is what makes a
+  rotation survivable, and it needs the id to know which key to recompute under.
 - `MaskKey.ephemeral()` is for tests and local development. It is safe but makes pseudonyms
   incomparable across instances and restarts, removing the reason to prefer `HASH` over `REDACT`.
 - **Never ship a built-in default key.** A publicly known key makes every pseudonym trivially
@@ -68,8 +73,13 @@ looks like must never be a route to leaking one.
 every order reference and correlation id in a log is reported as a card number, scanning becomes
 unusable in production, and someone turns it off — which is the actual failure mode.
 
-`BIC` additionally validates the country code against `Locale.getISOCountries()`, or the pattern
-matches ordinary uppercase prose.
+`BIC` additionally validates the country code against `Locale.getISOCountries()` **and** requires a
+digit or a trailing `XXX`. The country check alone was not enough: any uppercase word whose fifth and
+sixth letters spell an ISO code passed it, and log prose does that constantly — `CHECKING` is
+Kiribati, `DEUTSCHE` the Seychelles, `APPLICATION` Canada, `CUSTOMER` Oman. The trade is deliberate
+and is the one to keep making: an all-letter eight-character BIC like `DEUTDEFF` is no longer found in
+free text, but it is still masked wherever it is declared, and a scanner that garbles every
+capitalised word gets switched off — taking every other detector with it.
 
 When adding a detector: if the identifier has a check digit, use it and require it. If it does not,
 require enough surrounding structure that false positives stay rare (see `internationalPhone`, which
@@ -103,9 +113,19 @@ business logic is operating on.
   terminate.
 - `Mac` is created per call in `HmacPseudonymizer`, not cached in a field or a `ThreadLocal`. It is
   not thread-safe, and a `ThreadLocal` would pin memory per virtual thread.
-- A cycle's back-reference becomes `null` in the masked copy, never the original instance —
-  "the members were already masked on the way in" is wrong, because they were masked into the
-  *copy*; the original still carries raw PII.
+- An **object** cycle's back-reference becomes `null` in the masked copy, never the original
+  instance — "the members were already masked on the way in" is wrong, because they were masked into
+  the *copy*; the original still carries raw PII. A **container** is different and must stay
+  different: it registers its copy before walking, so the back-reference points at the copy. Do not
+  "unify" these — nulling a container cycle loses shape for no gain, and unrolling one (which is what
+  happened before containers were registered at all) is exponential.
+- A masked element that a copy refuses — null in an `ArrayDeque`, null in a `ConcurrentHashMap` — is
+  dropped, not propagated. Letting the refusal escape takes the whole enclosing object down a failure
+  path over one element.
+- `RejectingTokenVault` is the default vault and it **throws**. That is not an oversight to "fix" by
+  installing `InMemoryTokenVault`: the engine turns the throw into redaction plus `onFailure`, so an
+  unconfigured application gets masking and a signal. A working default vault means raw PII in a heap
+  map and a `detokenize` that reverses masking for anyone who can reach the bean.
 - `MaskPlan.failed` is distinct from `MaskPlan.opaque`, and `isOpaque()` must never be true for a
   failed plan: an opaque type is proven safe to pass through, a failed one only *looks* empty
   because its members could not be read.

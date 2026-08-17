@@ -12,6 +12,14 @@
  * included, for a producer whose serializer it does not — and headers are the part worth the module,
  * because a header set once for one debugging session then travels on every record afterwards.
  *
+ * <p>{@link ch.raph.datamask.kafka.MaskingSerde} is the same serializer in the shape Kafka Streams
+ * asks for, with the delegate's own deserializer beside it.
+ *
+ * <p>{@link ch.raph.datamask.kafka.MaskingConsumerInterceptor} is the other direction and is opt-in
+ * per consumer: it masks what a poll returns, for a topic whose history was written before any of this
+ * and for the framework error paths that log a whole {@code ConsumerRecord} — value included — when a
+ * listener throws.
+ *
  * <p>{@link ch.raph.datamask.kafka.RecordMasker} is the masking itself, for anywhere else the same job
  * comes up. {@link ch.raph.datamask.kafka.DataMaskKafka} is where a plugin Kafka built from a class
  * name finds the {@code DataMask} it should use.

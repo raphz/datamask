@@ -65,6 +65,40 @@ Content scanning is what catches a value no structural rule would see — an IBA
 fires, and a database error is the most valuable place for that signal: it means production data
 reached a log line.
 
+## Every other driver: the single-quoted value
+
+MySQL, MariaDB and H2 have no `(columns)=(values)` structure. They quote the offending value in
+**single quotes** and say nothing else about it:
+
+```
+Duplicate entry 'Mustermann9910' for key 'customer.customer_email_key'    -- MySQL / MariaDB
+(conn=42) Duplicate entry 'CH9300762011623852957' for key 'iban_uq'       -- MariaDB
+Unique index or primary key violation: "… CUSTOMER(EMAIL) VALUES ('john@x.com')"   -- H2
+Value too long for column "EMAIL CHARACTER VARYING(8)": "'Mustermann9910' (14)"    -- H2
+Data truncation: Data too long for column 'email' at row 1                -- MySQL
+```
+
+So for the two SQL state classes whose errors are *about a value* — `22`, data exception, and `23`,
+integrity constraint violation — the single-quoted spans are redacted too. Content scanning alone is
+not enough here: it catches an IBAN or an email, but a surname or an internal reference is a row
+value that no detector recognises, and it would have reached the log verbatim.
+
+One span may be kept: **the last one, and only when it is a bare SQL identifier**. These messages say
+what was given before they say what rejected it, so anything before the last span is a value, and the
+last one is `for key 'customer.customer_email_key'` or `for column 'email'` — the diagnostic core. It
+must be an identifier in the SQL sense (no `@`, no space, not starting with a digit), and it is never
+kept inside a double-quoted region, because there the quoted text is statement text and H2 renders
+the offending value exactly that way.
+
+```
+Duplicate entry '****' for key 'customer.customer_email_key'
+Data too long for column 'email' at row 1                     -- untouched: nothing but the column
+```
+
+Other SQL state classes are left alone, so `Unknown column 'emial' in 'field list'` still names the
+column. The residual case is a value that is a single identifier-shaped token *and* the last thing
+the message quotes; content scanning is the second line under it.
+
 ## What you get back
 
 **The same exception object** when there was nothing to remove — which is the common case. An
@@ -86,6 +120,12 @@ localised, and the raw value would still be sitting in `getServerErrorMessage()`
 `SQLIntegrityConstraintViolationException`, `22` `SQLDataException`, `42` `SQLSyntaxErrorException`,
 and so on — so `catch (SQLIntegrityConstraintViolationException e)`, Spring's exception translation
 and Hibernate's dialect all keep classifying the error the same way.
+
+**A `BatchUpdateException` stays one**, with `getUpdateCounts()` and `getLargeUpdateCounts()` carried
+across. A count says which entry of the batch failed — a row *position*, never row data — and
+Hibernate's and Spring's batch error handling both read them. The standard subclass for the SQL state
+is deliberately not used there: the driver threw a batch failure and code catching one still has to
+see one.
 
 The original exception is **never kept as a cause**: it holds the raw text, and a cause is printed
 with the exception that wraps it. The stack trace is copied across instead, because it says where the
@@ -132,7 +172,7 @@ try {
 }
 ```
 
-## Two behaviours worth knowing about
+## Three behaviours worth knowing about
 
 **`unwrap` returns the real object, unproxied**, as JDBC intends. Code reaching for `PGConnection` to
 run a `COPY` needs the driver's own connection and refusing would break it. Exceptions from an object
@@ -143,11 +183,23 @@ failing on a stored value, a statement timeout — and in cursor mode that arriv
 Leaving result sets unwrapped would put a hole exactly in the path that reads data. The cost is one
 reflective dispatch per call, the same as p6spy or datasource-proxy.
 
+**So is `DatabaseMetaData`.** It is a way back out of the wrapper: `metaData.getConnection()` is
+specified to return the connection that produced it, and the driver's own object returns the driver's
+own connection — so every statement created through it, and every error those statements raise, would
+leave the masking behind. The proxy returns the wrapping connection instead, and wraps the result sets
+metadata queries return.
+
 ## The PostgreSQL driver is optional
 
-`compileOnly`. With the driver present the module works on the error's structured parts, which is
-locale-independent; without it, every `SQLException` is still sanitised as text. Nothing here requires
-PostgreSQL.
+`compileOnly`, loaded behind a `Class.forName` guard, so the module runs with any driver and none of
+this needs PostgreSQL on the classpath.
+
+| Driver | What it gets |
+|---|---|
+| PostgreSQL, driver present | The structured parts of the `ServerErrorMessage` are rewritten, `(columns)=(values)` masked, `Detail` dropped when unrecognised, `Internal Query` dropped, `Where` redacted. Locale-independent, and a genuine `PSQLException` comes back. |
+| PostgreSQL, driver absent | The same `(columns)=(values)` rule, applied to the composed message text; the standard JDBC subclass for the SQL state comes back. |
+| MySQL, MariaDB, H2 and anything else | The same rule, plus single-quoted spans redacted on SQL state class `22` and `23`, keeping a trailing identifier. |
+| Any driver, any error | Content scanning over the message, both chains and the suppressed list walked, `BatchUpdateException` counts preserved, stack trace copied. |
 
 ## Tests
 
@@ -157,4 +209,7 @@ the wrapper — a test that something is absent proves nothing unless the same q
 leaks it otherwise. It is skipped when Docker is unavailable; CI has Docker.
 
 Everything else runs without a server. `SqlExceptionSanitizerTest` builds its exceptions from the
-driver's own wire format, so they are the driver's parsing of the driver's input rather than stubs.
+driver's own wire format, so they are the driver's parsing of the driver's input rather than stubs;
+its MySQL, MariaDB and H2 cases use message shapes captured from those servers, with values no
+detector recognises, so what they pin is the structural rule and not the scanner underneath it.
+`DatabaseMetaDataProxyTest` stubs a JDBC stack to check which object comes back out of the wrapper.

@@ -3,8 +3,10 @@ package ch.raph.datamask.kafka;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ch.raph.datamask.application.DataMask;
+import ch.raph.datamask.domain.MaskingObserver;
 import ch.raph.datamask.kafka.testdomain.Payments;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerInterceptor;
@@ -18,8 +20,8 @@ import org.junit.jupiter.api.Test;
 /**
  * {@code MockProducer} is not used here, and could not be: it stores the {@code ProducerRecord}
  * objects it was handed rather than the bytes, and it never runs the interceptor chain. Calling
- * {@code onSend} is the interceptor's actual contract, and {@code MaskingProducerKafkaTest} is what
- * proves the producer really goes through it.
+ * {@code onSend} is the interceptor's actual contract, and {@code MaskingKafkaTest} is what proves the
+ * producer really goes through it.
  */
 @DisplayName("An interceptor that masks every record a producer sends")
 class MaskingProducerInterceptorTest {
@@ -126,6 +128,48 @@ class MaskingProducerInterceptorTest {
                 interceptor.onSend(record(new Payments.Unrebuildable(IBAN, "x", 1)));
 
         assertThat(masked).isNull();
+    }
+
+    @Test
+    @DisplayName("reports a dropped record to the observer, so metrics and an audit sink learn about it rather "
+            + "than only a log file nobody has an alert on")
+    void reportsADroppedRecordToTheObserver() {
+        List<String> failures = new ArrayList<>();
+        DataMask observed = DataMask.builder()
+                .observer(new MaskingObserver() {
+                    @Override
+                    public void onFailure(String path, Throwable error) {
+                        failures.add(path);
+                    }
+                })
+                .build();
+        ProducerInterceptor<String, Payments.Unrebuildable> interceptor = new MaskingProducerInterceptor<>(observed);
+
+        ProducerRecord<String, Payments.Unrebuildable> dropped =
+                interceptor.onSend(record(new Payments.Unrebuildable(IBAN, "x", 1)));
+
+        assertThat(dropped).isNull();
+        // The engine reports the structural failure under its own root path first; what this
+        // pins is the second one, which names the record the interceptor then dropped.
+        assertThat(failures).contains("kafka:record/payments");
+    }
+
+    @Test
+    @DisplayName("still drops the record when the observer itself throws, because a thrown onSend has Kafka "
+            + "publish the record it had before — the unmasked one")
+    void survivesAnObserverThatThrows() {
+        DataMask observed = DataMask.builder()
+                .observer(new MaskingObserver() {
+                    @Override
+                    public void onFailure(String path, Throwable error) {
+                        throw new IllegalStateException("this observer is broken");
+                    }
+                })
+                .build();
+        ProducerInterceptor<String, Payments.Unrebuildable> interceptor = new MaskingProducerInterceptor<>(observed);
+
+        assertThat(interceptor.onSend(record(new Payments.Unrebuildable(IBAN, "x", 1))))
+                .isNull();
     }
 
     @Test

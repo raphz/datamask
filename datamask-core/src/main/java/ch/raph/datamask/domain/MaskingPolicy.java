@@ -31,7 +31,11 @@ public record MaskingPolicy(
 
     /**
      * Production default: mask everything annotated, scan free text for PII that nobody annotated,
-     * and redact rather than throw when something goes wrong.
+     * mask map keys, and redact rather than throw when something goes wrong.
+     *
+     * <p>Keys are masked here and not under {@link #relaxed()} because a map keyed by email address
+     * or customer reference is a common shape, and a key is as disclosing as a value. What it costs
+     * is lookup semantics: the masked copy is no longer keyed by anything the caller can look up.
      */
     public static MaskingPolicy strict() {
         return new MaskingPolicy(Sensitivity.LOW, FailureMode.REDACT, "****", 32, 1_000, true, true);
@@ -80,5 +84,32 @@ public record MaskingPolicy(
     public MaskingPolicy withRedactionPlaceholder(String placeholder) {
         return new MaskingPolicy(
                 threshold, failureMode, placeholder, maxDepth, maxCollectionElements, scanUnannotatedText, maskMapKeys);
+    }
+
+    public MaskingPolicy withMaskMapKeys(boolean mask) {
+        return new MaskingPolicy(
+                threshold,
+                failureMode,
+                redactionPlaceholder,
+                maxDepth,
+                maxCollectionElements,
+                scanUnannotatedText,
+                mask);
+    }
+
+    public MaskingPolicy withMaxDepth(int depth) {
+        return new MaskingPolicy(
+                threshold,
+                failureMode,
+                redactionPlaceholder,
+                depth,
+                maxCollectionElements,
+                scanUnannotatedText,
+                maskMapKeys);
+    }
+
+    public MaskingPolicy withMaxCollectionElements(int elements) {
+        return new MaskingPolicy(
+                threshold, failureMode, redactionPlaceholder, maxDepth, elements, scanUnannotatedText, maskMapKeys);
     }
 }

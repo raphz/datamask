@@ -11,8 +11,17 @@ import java.lang.reflect.Constructor;
  * wrong exception — the one thing a reader trusts a stack trace for.
  *
  * <p>So the type is reconstructed: {@code (String, Throwable)} first, then {@code (String)}, with the
- * original's frames copied onto it. A type with neither constructor gets a stand-in that reports the
- * original class name in its {@code toString}, which is what an ordinary {@code %ex} pattern prints.
+ * original's frames copied onto it. A type with neither constructor gets a stand-in that carries the
+ * original class name in its <em>message</em>, so both {@code toString()} — what an ordinary
+ * {@code %ex} pattern prints — and the message a JSON layout writes still name the type that was
+ * thrown.
+ *
+ * <p>The message is the only place it can go. A {@code ThrowableProxy}, and every layout derived from
+ * one, reads the class name off {@code getClass()}, which for a stand-in is the one thing about it that
+ * cannot be the original's; the field is private and final and there is no way to set it. So a JSON
+ * layout writing {@code exception.class} names this class for a type that could not be rebuilt, and
+ * {@code exception.message} is where the original type is to be read. That is the residual limitation,
+ * and it is documented in the module README.
  *
  * <p>What is lost is state the exception carried in fields of its own — a SQL state, an error code. It
  * is not printed by a layout, and losing it is the fail-closed direction.
@@ -71,22 +80,23 @@ final class MaskedThrowables {
     }
 
     /**
-     * The stand-in for a type that cannot be rebuilt. It answers with the original class name, so an
-     * {@code %ex} pattern — which prints {@code toString()} — reads as it did before.
+     * The stand-in for a type that cannot be rebuilt. The original class name goes into the message,
+     * which is the only field of a {@code Throwable} a reader of the log can be given it through: an
+     * {@code %ex} pattern prints {@code toString()}, but a JSON layout writes {@code exception.class}
+     * from {@code getClass()} and {@code exception.message} from the message, and only the second of
+     * those can be made to say what was thrown.
      */
     private static final class MaskedThrowable extends Throwable {
 
-        private final String className;
-
         MaskedThrowable(String className, String message, Throwable cause) {
-            super(message, cause);
-            this.className = className;
+            super(message == null ? className : className + ": " + message, cause);
         }
 
         @Override
         public String toString() {
-            String message = getLocalizedMessage();
-            return message == null ? className : className + ": " + message;
+            // Throwable.toString() would prefix this class's name to a message that already names the
+            // original. Returning the message alone keeps %ex reading exactly as it did before.
+            return getLocalizedMessage();
         }
     }
 }

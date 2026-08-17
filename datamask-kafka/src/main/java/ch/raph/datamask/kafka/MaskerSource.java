@@ -14,8 +14,8 @@ import org.slf4j.LoggerFactory;
  * {@code HASH} pseudonym differs between instances and after a restart, which removes the reason to
  * prefer it over {@code REDACT} — a pseudonymised customer id stops correlating across the topic.
  *
- * <p>The installed instance is looked up per record rather than once, because a producer may well be
- * built before the {@code DataMask} it should use. The result is cached against the instance it came
+ * <p>The installed instance is looked up per record rather than once, because a producer or consumer
+ * may well be built before the {@code DataMask} it should use. The result is cached against the instance it came
  * from, so the cost is a volatile read and a late install is still picked up.
  */
 final class MaskerSource {
@@ -76,7 +76,7 @@ final class MaskerSource {
     }
 
     private static DataMask ephemeralFallback() {
-        LOG.error("datamask: no DataMask installed for the Kafka producer; masking with strict defaults and an"
+        LOG.error("datamask: no DataMask installed for the Kafka client; masking with strict defaults and an"
                 + " ephemeral key, so pseudonyms will not be comparable across restarts or between instances."
                 + " Call DataMaskKafka.install(...) during startup.");
         return DataMask.withDefaults();

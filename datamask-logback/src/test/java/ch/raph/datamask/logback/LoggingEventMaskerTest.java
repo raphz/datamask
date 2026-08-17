@@ -136,6 +136,66 @@ class LoggingEventMaskerTest {
     }
 
     @Nested
+    @DisplayName("Formatting the masked line")
+    class Formatting {
+
+        @Test
+        @DisplayName("renders a primitive array as its elements, the way logback's own formatting does")
+        void rendersPrimitiveArraysLikeLogback() {
+            ILoggingEvent masked = masker.mask(event("ids {} for {}", new int[] {1, 2, 3}, IBAN));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(logbackWouldRender("ids {} for {}", new int[] {1, 2, 3}, IBAN));
+        }
+
+        @Test
+        @DisplayName("renders nested arrays element by element, primitive and object alike")
+        void rendersNestedArraysLikeLogback() {
+            Object nested = new Object[] {new int[] {1, 2}, new String[] {"a", "b"}, new char[] {'x'}};
+
+            ILoggingEvent masked = masker.mask(event("batch {} for {}", nested, IBAN));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(logbackWouldRender("batch {} for {}", nested, IBAN));
+        }
+
+        @Test
+        @DisplayName("drops a trailing throwable argument from the rendering, as logback's own formatting does")
+        void dropsATrailingThrowableArgumentLikeLogback() {
+            // A trailing throwable that never became the event's proxy: logback fills the placeholders
+            // from the arguments before it and leaves the last one unfilled. Masking rewrites a
+            // throwable whose message carried a value into text, so which argument is a throwable has
+            // to be read off the original array or the placeholders shift.
+            ILoggingEvent masked = masker.mask(bare("rejected {} because {}", IBAN, new IllegalStateException("boom")));
+
+            assertThat(masked.getFormattedMessage())
+                    .doesNotContain(IBAN)
+                    .isEqualTo(bare("rejected {} because {}", IBAN, new IllegalStateException("boom"))
+                            .getFormattedMessage()
+                            .replace(IBAN, MASKED_IBAN));
+        }
+
+        @Test
+        @DisplayName("terminates on an array that points back at itself, and discloses nothing of it")
+        void survivesASelfReferentialArray() {
+            Object[] recursive = new Object[2];
+            recursive[0] = IBAN;
+            recursive[1] = recursive;
+
+            ILoggingEvent masked = masker.mask(event("batch {}", (Object) recursive));
+
+            assertThat(masked.getFormattedMessage()).doesNotContain(IBAN);
+        }
+
+        /** The line logback itself would have produced for the same arguments, minus the masking. */
+        private static String logbackWouldRender(String message, Object... arguments) {
+            return event(message, arguments).getFormattedMessage().replace(IBAN, MASKED_IBAN);
+        }
+    }
+
+    @Nested
     @DisplayName("The message body")
     class MessageBody {
 
@@ -630,6 +690,20 @@ class LoggingEventMaskerTest {
                 message,
                 null,
                 arguments.length == 0 ? null : arguments);
+    }
+
+    /**
+     * An event assembled field by field rather than through the constructor, which is what leaves a
+     * throwable in the argument array without a proxy of its own.
+     */
+    private static LoggingEvent bare(String message, Object... arguments) {
+        LoggingEvent event = new LoggingEvent();
+        event.setLoggerName(LOGGER);
+        event.setLevel(Level.INFO);
+        event.setMessage(message);
+        event.setArgumentArray(arguments);
+        event.setMDCPropertyMap(java.util.Map.of());
+        return event;
     }
 
     private static LoggingEvent eventWith(Throwable thrown, String message) {

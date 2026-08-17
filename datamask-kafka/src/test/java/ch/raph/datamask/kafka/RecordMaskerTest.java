@@ -12,10 +12,14 @@ import ch.raph.datamask.kafka.testdomain.Payments;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.internals.RecordHeader;
+import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -226,6 +230,86 @@ class RecordMaskerTest {
 
         private Header header(String name, String value) {
             return new RecordHeader(name, value.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Nested
+    @DisplayName("a record on its way back in")
+    class Polled {
+
+        @Test
+        @DisplayName("is masked the same way, payload and headers, for a topic whose history nobody masked")
+        void masksTheWholeRecord() {
+            ConsumerRecord<String, Payments.Payment> masked =
+                    masker.mask(polled(payment(), header("x-customer-email", EMAIL)));
+
+            assertThat(masked.value().iban()).doesNotContain(IBAN);
+            assertThat(headerValue(masked, "x-customer-email")).doesNotContain(EMAIL);
+        }
+
+        @Test
+        @DisplayName("keeps everything that says where it came from, so offsets and tracing still line up")
+        void keepsPositionAndMetadata() {
+            ConsumerRecord<String, Payments.Payment> masked = masker.mask(polled(payment()));
+
+            assertThat(masked.topic()).isEqualTo("payments");
+            assertThat(masked.partition()).isZero();
+            assertThat(masked.offset()).isEqualTo(11L);
+            assertThat(masked.timestamp()).isEqualTo(1_700_000_000_000L);
+            assertThat(masked.timestampType()).isEqualTo(TimestampType.CREATE_TIME);
+            assertThat(masked.leaderEpoch()).contains(7);
+            assertThat(masked.deliveryCount()).contains((short) 2);
+        }
+
+        @Test
+        @DisplayName("is the same record when it carried nothing, which is the common case downstream of a "
+                + "masking producer")
+        void returnsTheSameRecord() {
+            ConsumerRecord<String, String> clean = polled("settlement 8842");
+
+            assertThat(masker.mask(clean)).isSameAs(clean);
+        }
+
+        @Test
+        @DisplayName("leaves the key alone by default here too, because application code correlates by it")
+        void leavesTheKeyAlone() {
+            assertThat(masker.mask(polled(payment())).key()).isEqualTo("cust-4711");
+        }
+
+        @Test
+        @DisplayName("throws rather than hand the caller a value it could not mask")
+        void throwsWhenItCannotBeRebuilt() {
+            ConsumerRecord<String, Payments.Unrebuildable> unrebuildable =
+                    polled(new Payments.Unrebuildable(IBAN, "x", 1));
+
+            assertThatThrownBy(() -> masker.mask(unrebuildable))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageNotContaining(IBAN);
+        }
+
+        private <V> ConsumerRecord<String, V> polled(V value, Header... headers) {
+            return new ConsumerRecord<>(
+                    "payments",
+                    0,
+                    11L,
+                    1_700_000_000_000L,
+                    TimestampType.CREATE_TIME,
+                    12,
+                    34,
+                    "cust-4711",
+                    value,
+                    new RecordHeaders(headers),
+                    Optional.of(7),
+                    Optional.of((short) 2));
+        }
+
+        private Header header(String name, String value) {
+            return new RecordHeader(name, value.getBytes(StandardCharsets.UTF_8));
+        }
+
+        private String headerValue(ConsumerRecord<?, ?> record, String name) {
+            Header header = record.headers().lastHeader(name);
+            return header == null || header.value() == null ? null : new String(header.value(), StandardCharsets.UTF_8);
         }
     }
 

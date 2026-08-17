@@ -4,6 +4,7 @@ import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.Sensitivity;
 import ch.raph.datamask.domain.FailureMode;
 import ch.raph.datamask.domain.MaskingPolicy;
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -42,7 +43,7 @@ public record DataMaskProperties(
         @DefaultValue Integration jackson,
         @DefaultValue Integration logback,
         @DefaultValue Integration log4j2,
-        @DefaultValue Integration jdbc,
+        @DefaultValue Jdbc jdbc,
         @DefaultValue Integration kafka,
         @DefaultValue Integration metrics) {
 
@@ -53,6 +54,27 @@ public record DataMaskProperties(
 
     /** One integration's on/off switch. */
     public record Integration(@DefaultValue("true") boolean enabled) {}
+
+    /**
+     * The JDBC integration's switch, plus the one thing wrapping every {@code DataSource} needs an
+     * escape hatch for.
+     *
+     * <p>The wrapper is a {@code MaskingDataSource} and not a {@code HikariDataSource}, so an
+     * injection point declared as the pool's own type stops resolving once the bean is wrapped.
+     * Naming that bean here leaves it alone. It is the last resort rather than the first: an
+     * unwrapped pool is one whose unique-constraint violations still quote the row they collided
+     * with, so prefer injecting {@code DataSource} and unwrapping, which keeps the masking.
+     *
+     * @param enabled whether DataMask wraps the application's DataSource beans at all.
+     * @param excludedBeans Names of DataSource beans to leave unwrapped. A pool named here keeps
+     *     quoting row values in its errors, so each exclusion is logged at startup.
+     */
+    public record Jdbc(@DefaultValue("true") boolean enabled, List<String> excludedBeans) {
+
+        public Jdbc {
+            excludedBeans = excludedBeans == null ? List.of() : List.copyOf(excludedBeans);
+        }
+    }
 
     /**
      * The environment-dependent half of masking: how strictly this deployment treats data the

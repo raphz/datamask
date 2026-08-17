@@ -18,7 +18,7 @@ Instances are immutable and thread-safe, and are meant to be created once per ap
 |---|---|---|
 | `REDACT` | `****` | nothing |
 | `PARTIAL` | `****6827` | a trailing window |
-| `HASH` | `~7Kd9fPqR2xLmA0Zt` | equality, across services |
+| `HASH` | `~a3Kd9Q:7fPqR2xLmA0Ztb1Xw` | equality, across services |
 | `TOKENIZE` | `tok_iban_9fB2…` | reversibility, via a vault |
 | `NULLIFY` | *(absent)* | nothing, not even presence |
 | `EMAIL` | `j*******@e******.com` | shape and TLD |
@@ -72,8 +72,10 @@ DataMask.builder()
 `strict()` masks everything annotated, scans free text, and redacts on failure. `relaxed()` hides only
 high-sensitivity data and leaves prose alone — card numbers and credentials still never appear.
 
-`MaskingPolicy` also bounds the walk: `maxDepth`, `maxCollectionElements`, `maskMapKeys` (off by
-default, because masking a key changes lookup semantics) and `scanUnannotatedText`.
+`MaskingPolicy` also bounds the walk: `maxDepth`, `maxCollectionElements`, `scanUnannotatedText` and
+`maskMapKeys` — **on** under `strict()`, off under `relaxed()`. A map keyed by email address is a
+common enough shape that leaving keys alone in production was the wrong default; the cost is that
+masking a key changes lookup semantics in the masked copy, which is why `relaxed()` still skips it.
 
 ## Content detection
 
@@ -91,9 +93,13 @@ the signal worth alerting on**, because it is the earliest warning that a new fi
 ## Types it can mask
 
 - **Records** — rebuilt through the canonical constructor.
-- **Beans** — through an all-arguments constructor matching field order (what Lombok's
-  `@AllArgsConstructor` and Jackson's `@ConstructorProperties` produce), or a no-argument constructor
-  plus field writes.
+- **Beans** — through an all-arguments constructor (what Lombok's `@AllArgsConstructor` and Jackson's
+  `@ConstructorProperties` produce), or a no-argument constructor plus field writes. Parameters are
+  matched to fields by **name** where the class carries them (`-parameters` or
+  `@ConstructorProperties`), so the constructor may take them in any order. Without names, a match is
+  only accepted while the field types are distinct — two same-typed parameters would otherwise be
+  matched by position, and a constructor declaring them the other way round would swap two values in
+  every masked copy. That case is refused rather than guessed.
 - **Collections, maps, arrays, `Optional`** — traversed, with cycle detection and depth and size
   bounds.
 - **Single-component value objects** — `record Email(String value)` has its contents masked and stays
@@ -119,12 +125,47 @@ a direct call per member and a direct constructor invocation, no reflection at a
 everything it has no plan for to the reflective one. Adding the processor to the annotation path is
 the only thing an application does; `.compiler(...)` on the builder is there for anything else.
 
-Policy overrides turn generation off. A generated plan resolved `@PII` before `PolicyOverrides`
-existed, so answering from one while overrides are configured would silently ignore them.
+A policy override turns generation off **for the types it reaches** — the type a member override
+names, a type named outright, and any type holding a member whose declared type an override names. A
+generated plan resolved `@PII` before `PolicyOverrides` existed, so answering from one would silently
+ignore the override. Only those types pay for it: one override for one DTO does not return the whole
+application to reflection.
 
 ## Keys
 
-`HASH` and `TOKENIZE` need a secret of at least sixteen bytes. `MaskKey.ephemeral()` exists for tests
-and local development; it is safe but makes pseudonyms incomparable across instances and restarts,
-which removes the reason to prefer `HASH` over `REDACT`. There is deliberately **no built-in default
-key** — a publicly known key makes every pseudonym trivially reversible.
+`HASH` and `TOKENIZE` need a secret of at least sixteen bytes, run through HKDF-SHA-256 before it
+becomes the HMAC key. Prefer `secret(char[])` over `secret(String)` — a `String` cannot be wiped, and
+stays readable in any heap dump taken before it is collected.
+
+`MaskKey.ephemeral()` exists for tests and local development; it is safe but makes pseudonyms
+incomparable across instances and restarts, which removes the reason to prefer `HASH` over `REDACT`.
+There is deliberately **no built-in default key** — a publicly known key makes every pseudonym
+trivially reversible.
+
+### Rotating one
+
+A pseudonym reads `~<keyId>:<digest>`, where the key id is derived from the material itself, so two
+processes sharing a secret compute the same id with nothing to configure. That is what makes a
+rotation survivable: a pseudonym written before it is recognisable as such, rather than a value that
+silently stops joining to anything.
+
+```java
+DataMask.builder()
+        .secret(current)
+        .previousSecret(retiring)        // repeatable; keep for as long as old data is joined
+        .build();
+
+dataMask.pseudonymMatches(iban, pseudonymWrittenLastYear);   // true, via the keyring
+```
+
+`MaskKey.forPurpose("export")` derives a separate subkey from the same secret, so a pseudonym issued
+for one purpose cannot be joined against one issued for another. `destroy()` wipes the material.
+
+## Tokenisation needs a vault you chose
+
+`TOKENIZE` is the one strategy that keeps the original value, so there is no safe default and the
+library does not pretend otherwise. Without `Builder.vault(...)`, tokenisation **refuses**: the value
+is redacted and `MaskingObserver.onFailure` is told. `InMemoryTokenVault` is opt-in, bounded by
+capacity and a fifteen-minute time to live, and is meant for the request-scoped round trip — mask a
+prompt, put the real values back into the answer. Card data belongs in a PCI-scoped vault behind your
+own `TokenVault`.

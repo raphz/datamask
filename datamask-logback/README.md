@@ -65,6 +65,26 @@ Two deliberate losses inside a rebuilt marker, both in the fail-closed direction
 payload that needed masking is re-attached as an ordinary string field, because masking a fragment of
 raw JSON can leave it unparseable.
 
+## The masked line is formatted the way logback would have formatted it
+
+Masking replaces the arguments, so the line has to be re-rendered — and it is re-rendered through
+logback's own `MessageFormatter`, from the masked message and the masked argument array. That is what
+makes a masked line read like the unmasked one would have: an `int[]` argument renders as `[1, 2, 3]`
+rather than as its identity, and nested arrays render element by element, primitive and object alike.
+
+One rule lives here rather than in the formatter, because `LoggingEvent` applies it itself: a trailing
+throwable argument is left out of the rendering unless it also became the event's throwable proxy.
+Whether the last argument is a throwable is read off the **original** array — masking rewrites a
+throwable whose message carried a value into text, and which argument is a throwable must not depend on
+whether it needed masking, or every placeholder after it would shift.
+
+One case still reads differently from the unmasked line: an **array that points back at itself**.
+`MessageFormatter` prints such an array as `[…]`, but the masking engine copies an array by walking it
+and stops on depth rather than on identity, so what reaches the formatter is a tree rather than a cycle
+and it renders unrolled to `maxDepth`. Nothing is disclosed by it, and an array whose walk cannot be
+completed at all leaves the line withheld rather than raw — but the fidelity is lost until the engine
+detects cycles in arrays and collections the way it already does in objects.
+
 ## An event that carried nothing is forwarded as itself
 
 The engine and the text sanitiser both return the **same instance** when nothing was masked, so
@@ -117,9 +137,11 @@ no exception message, because the exception was raised while handling a value an
 
 ## Tests
 
-39, all asserting the raw value is **absent** from what an encoder renders rather than only that the
-masked form is present. They cover the declared strategies, bare values a detector recognises, the MDC,
-key-value pairs, cause chains and suppressed exceptions, the same-instance short-circuit, the observer
-paths, the fail-closed paths, and markers — an appended object and an appended map asserted against
+53 across the masker and the appender, all asserting the raw value is **absent** from what an encoder
+renders rather than only that the masked form is present. They cover the declared strategies, bare
+values a detector recognises, the MDC, key-value pairs, cause chains and suppressed exceptions, the
+same-instance short-circuit, the observer paths, the fail-closed paths, the rendering of the masked line
+against what logback itself renders for the same event (primitive and nested arrays, a self-referential
+one, the trailing-throwable rule), and markers — an appended object and an appended map asserted against
 real `LogstashEncoder` output, a logstash marker nested under a filtering one, a plain marker passing
 through untouched, and an unknown marker type stripped to its name.

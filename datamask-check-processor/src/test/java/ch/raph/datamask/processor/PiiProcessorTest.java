@@ -262,6 +262,53 @@ class PiiProcessorTest {
         }
 
         @Test
+        @DisplayName("fails the build on final fields with only a no-argument constructor, which the engine "
+                + "cannot write to however ordinary the class looks")
+        void rejectsFinalFieldsWithOnlyANoArgumentConstructor() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.PII;
+
+                    public class Customer {
+                        @PII private final String email;
+                        private int age;
+
+                        public Customer() {
+                            this.email = null;
+                        }
+                    }
+                    """);
+
+            assertThat(result.errors())
+                    .singleElement()
+                    .asString()
+                    .contains("fixture.Customer")
+                    .contains("email is final")
+                    .contains("Customer(String, int)");
+        }
+
+        @Test
+        @DisplayName("accepts a constructor whose parameters name the fields out of order, which the engine "
+                + "matches by name and permutes")
+        void acceptsAConstructorThatNamesTheFieldsOutOfOrder() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.PII;
+
+                    public class Customer {
+                        @PII private String email;
+                        private int age;
+
+                        public Customer(int age, String email) {}
+                    }
+                    """);
+
+            assertThat(result.all()).isEmpty();
+        }
+
+        @Test
         @DisplayName("accepts a record, which always rebuilds through its canonical constructor")
         void acceptsARecord() {
             var result = compile("fixture.Customer", """
@@ -402,6 +449,192 @@ class PiiProcessorTest {
                     """);
 
             assertThat(result.all()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("checks an exemption written on a hand-written record accessor, which is a declaration and "
+                + "not one of javac's copies")
+        void checksAnExemptionOnAHandWrittenAccessor() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.NoMask;
+
+                    public record Customer(String country) {
+
+                        @NoMask(justification = "   ")
+                        @Override
+                        public String country() {
+                            return country;
+                        }
+                    }
+                    """);
+
+            assertThat(result.errors())
+                    .singleElement()
+                    .asString()
+                    .contains("Customer.country")
+                    .contains("the justification is blank");
+        }
+
+        @Test
+        @DisplayName("still reports a component's own exemption once, although javac copies it onto the field, "
+                + "the accessor and the constructor parameter")
+        void reportsAComponentExemptionOnlyOnce() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.NoMask;
+
+                    public record Customer(@NoMask(justification = "TODO") String country) {}
+                    """);
+
+            assertThat(result.warnings()).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("given a @PII that does not mask the value it is written on")
+    class IneffectiveDeclarations {
+
+        @Test
+        @DisplayName("fails the build when the same member also carries @NoMask, because the exemption wins and "
+                + "the annotation reads as protection while removing it")
+        void rejectsPiiExemptedOnTheSameMember() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.NoMask;
+                    import ch.raph.datamask.api.PII;
+
+                    public record Customer(
+                            @PII @NoMask(justification = "already redacted upstream") String email) {}
+                    """);
+
+            assertThat(result.errors())
+                    .singleElement()
+                    .asString()
+                    .contains("Customer.email")
+                    .contains("also carries @NoMask")
+                    .contains("clear text");
+        }
+
+        @Test
+        @DisplayName("and when the exemption is on the getter rather than on the field, which is the same "
+                + "resolution the runtime performs and the harder one to see in a review")
+        void rejectsPiiExemptedOnTheGetter() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.NoMask;
+                    import ch.raph.datamask.api.PII;
+
+                    public class Customer {
+                        @PII private String email;
+
+                        @NoMask(justification = "already redacted upstream")
+                        public String getEmail() {
+                            return email;
+                        }
+
+                        public Customer(String email) {}
+                    }
+                    """);
+
+            assertThat(result.errors())
+                    .singleElement()
+                    .asString()
+                    .contains("Customer.email")
+                    .contains("getEmail()")
+                    .contains("also carries @NoMask");
+        }
+
+        @Test
+        @DisplayName("warns on a static field, which neither plan compiler ever reads, so the annotation is dead "
+                + "code that looks like protection")
+        void warnsOnAStaticField() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.PII;
+
+                    public class Customer {
+                        @PII static String lastSeenEmail;
+                    }
+                    """);
+
+            assertThat(result.errors()).isEmpty();
+            assertThat(result.warnings())
+                    .singleElement()
+                    .asString()
+                    .contains("Customer.lastSeenEmail")
+                    .contains("the field is static");
+        }
+
+        @Test
+        @DisplayName("says nothing when a @NoMask sits on a different member of the same class")
+        void staysSilentOnAnExemptionElsewhere() {
+            var result = compile("fixture.Customer", """
+                    package fixture;
+
+                    import ch.raph.datamask.api.NoMask;
+                    import ch.raph.datamask.api.PII;
+
+                    public record Customer(
+                            @PII String email,
+                            @NoMask(justification = "ISO country code, not identifying") String country) {}
+                    """);
+
+            assertThat(result.all()).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("given Gradle asking what kind of processor this is")
+    class IncrementalBuilds {
+
+        /**
+         * Without the declaration Gradle assumes the worst and recompiles every source file in the
+         * project on every change, in every build that puts this module on its annotation path. The
+         * cost lands on adopters, so nothing in this repository would ever notice it.
+         */
+        @Test
+        @DisplayName("declares itself isolating, so adding the processor does not cost every adopter their "
+                + "incremental compilation")
+        void declaresItselfIsolating() throws Exception {
+            var resource = PiiProcessor.class
+                    .getClassLoader()
+                    .getResourceAsStream("META-INF/gradle/incremental.annotation.processors");
+
+            assertThat(resource)
+                    .as("META-INF/gradle/incremental.annotation.processors has to be on the class path")
+                    .isNotNull();
+            try (var stream = resource) {
+                assertThat(new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                                .lines()
+                                .filter(line -> !line.startsWith("#"))
+                                .filter(line -> !line.isBlank())
+                                .toList())
+                        .containsExactly(PiiProcessor.class.getName() + ",ISOLATING");
+            }
+        }
+
+        @Test
+        @DisplayName("and declares every processor it registers, because one undeclared entry turns the whole "
+                + "compile task non-incremental")
+        void declaresEveryRegisteredProcessor() throws Exception {
+            var services = PiiProcessor.class
+                    .getClassLoader()
+                    .getResourceAsStream("META-INF/services/javax.annotation.processing.Processor");
+
+            assertThat(services).isNotNull();
+            try (var stream = services) {
+                assertThat(new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                                .lines()
+                                .filter(line -> !line.isBlank())
+                                .toList())
+                        .containsExactly(PiiProcessor.class.getName());
+            }
         }
     }
 

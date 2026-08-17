@@ -16,7 +16,7 @@ public record Customer(
 DataMask dataMask = DataMask.builder().secret(System.getenv("DATAMASK_SECRET")).build();
 
 Customer safe = dataMask.mask(customer);
-// Customer[email=Email[value=j*******@e******.com], iban=~7Kd9fPqR2xLmA0Zt, country=CH]
+// Customer[email=Email[value=j*******@e******.com], iban=~a3Kd9Q:7fPqR2xLmA0Ztb1Xw, country=CH]
 ```
 
 The original object is untouched. The masked copy is the same type, so it drops straight into a
@@ -96,7 +96,7 @@ Each module documents itself. This page stays deliberately short; the detail liv
 | [`datamask-jdbc`](datamask-jdbc/README.md) | **implemented** | PostgreSQL error details and bind parameters. |
 | [`datamask-log4j2`](datamask-log4j2/README.md) | **implemented** | Log parameters, message bodies, thread context, exception messages. |
 | `datamask-logback` | **implemented** | The same, through Logback's own extension points. |
-| [`datamask-kafka`](datamask-kafka/README.md) | **implemented** | Records and headers, before they reach a topic. |
+| [`datamask-kafka`](datamask-kafka/README.md) | **implemented** | Records and headers, on the way out and on the way back in. |
 | `datamask-opentelemetry` | planned | Span attributes, events and log records before export. |
 | `datamask-jpa` | planned | `AttributeConverter`s for pseudonymised columns at rest. |
 | `datamask-ai` | planned | Prompt sanitisation with reversible placeholders. |

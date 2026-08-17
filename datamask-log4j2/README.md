@@ -82,9 +82,22 @@ replacement has to be of the **same type**, or the log would name the wrong exce
 thing a reader trusts a stack trace for.
 
 So the type is reconstructed through its `(String, Throwable)` constructor, then `(String)`, with the
-original's frames copied onto it. A type with neither gets a stand-in reporting the original class name
-in its `toString()`. What is lost is state the exception held in fields of its own — a SQL state, an
+original's frames copied onto it. A type with neither gets a stand-in that carries the original class
+name in its **message**, so `%ex` reads exactly as it did and the message a JSON layout writes still
+names what was thrown. What is lost is state the exception held in fields of its own — a SQL state, an
 error code; no layout prints it, and losing it is the fail-closed direction.
+
+**The one residual limitation is the stand-in's own class.** A `ThrowableProxy`, and every layout
+derived from one, reads the class name off `getClass()`; the field is private and final, and there is no
+API to set it. So for the rare type that has neither constructor, a `JsonTemplateLayout` writes
+`ch.raph.datamask.log4j2.MaskedThrowables$MaskedThrowable` as `exception.class`, and
+`exception.message` is where the original type is to be read — it is prefixed there, in the
+`com.example.OddException: <masked message>` form `toString()` has always used. Anything that alerts or
+groups on `exception.class` should treat that name as "the type below is in the message". Giving the
+substitute the original's class name would mean generating a class per exception type at runtime, which
+is not a trade this module makes on a logging path. Every exception with a `(String)` or
+`(String, Throwable)` constructor — which is nearly all of them, including everything the JDK, Spring
+and the JDBC drivers throw — is reconstructed as itself and is unaffected.
 
 ## Where the DataMask comes from
 
@@ -121,9 +134,11 @@ well quote it.
 
 ## Tests
 
-64, all asserting the raw value is **absent** from what a layout renders rather than only that the
+66, all asserting the raw value is **absent** from what a layout renders rather than only that the
 masked form is present. They cover the declared strategies, bare values a detector recognises, map and
 object messages, the context map, cause chains and suppressed exceptions, the same-type reconstruction
-and its stand-in, both policies, the observer paths, plugin registration through the generated
-descriptor, the fail-closed paths, and garbage-free mode — reusable messages, a mutable event standing
-in for its own message, and a real logger running with threadlocals enabled.
+and its stand-in — including that the stand-in names the original type both in its `toString()` and in
+the message a layout derived from a `ThrowableProxy` reads — both policies, the observer paths, plugin
+registration through the generated descriptor, the fail-closed paths, and garbage-free mode — reusable
+messages, a mutable event standing in for its own message, and a real logger running with threadlocals
+enabled.

@@ -120,6 +120,30 @@ class MaskingEngineTest {
     }
 
     @Test
+    @DisplayName("rebuilds a bean whose constructor takes the fields in a different order than it declares them")
+    void masksBeanWithReorderedConstructor() {
+        Banking.ReorderedConstructor masked =
+                dataMask.mask(new Banking.ReorderedConstructor(7, "john.doe@example.com"));
+
+        assertThat(masked).isNotNull();
+        assertThat(masked.getEmail()).doesNotContain("john.doe").isEqualTo("j*******@e******.com");
+        // The unmasked member has to come back as itself: a permuted rebuild that got the order
+        // wrong would put the masked address here and the flags where the address belongs.
+        assertThat(masked.getFlags()).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("refuses to rebuild rather than risk swapping two same-typed members it cannot tell apart")
+    void refusesAmbiguousConstructor() {
+        Banking.UnmatchableConstructor masked =
+                dataMask.mask(new Banking.UnmatchableConstructor("ref-4711", "john.doe@example.com"));
+
+        // Dropped, not guessed. Guessing produces a masked copy in which the reference reads as an
+        // address and the address as a reference — wrong data that looks entirely plausible.
+        assertThat(masked).isNull();
+    }
+
+    @Test
     @DisplayName("still passes an unrebuildable but PII-free bean through, via the no-change short-circuit")
     void keepsCleanUnrebuildableBean() {
         Banking.UnrebuildableClean clean = new Banking.UnrebuildableClean(true, 7);

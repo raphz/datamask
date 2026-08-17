@@ -54,7 +54,7 @@ class RegistrationTest {
     }
 
     @Test
-    @DisplayName("registers the failure analyzer, which is the whole difference between a readable "
+    @DisplayName("registers both secret failure analyzers, which are the whole difference between a readable "
             + "startup message and a bean-creation stack trace")
     void failureAnalyzerIsRegistered() {
         // Boot's own analyzers want a bean factory this test has no reason to build, so their
@@ -64,7 +64,9 @@ class RegistrationTest {
                     /* another module's analyzer, not ours */
                 }));
 
-        assertThat(analyzers).hasAtLeastOneElementOfType(MissingMaskSecretFailureAnalyzer.class);
+        assertThat(analyzers)
+                .hasAtLeastOneElementOfType(MissingMaskSecretFailureAnalyzer.class)
+                .hasAtLeastOneElementOfType(ShortMaskSecretFailureAnalyzer.class);
     }
 
     private static List<String> imports() throws IOException {

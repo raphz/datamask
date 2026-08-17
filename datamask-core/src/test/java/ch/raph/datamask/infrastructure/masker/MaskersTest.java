@@ -78,6 +78,26 @@ class MaskersTest {
         assertThat(new FormatPreservingMasker().mask("123", cvv)).hasToString("****");
     }
 
+    @Test
+    @DisplayName("generalises the legacy java.sql date and time types instead of throwing on them")
+    void generalisesSqlTemporalTypes() {
+        MaskContext birthDate = context(PiiCategory.DATE_OF_BIRTH, MaskStrategy.DATE_GENERALIZE);
+        DateGeneralizeMasker masker = new DateGeneralizeMasker();
+
+        // java.sql.Date and java.sql.Time throw from toInstant() by contract, and java.sql.Date is
+        // the single most common type a legacy schema gives a birth date — so the branch that
+        // reached for toInstant() failed on exactly the value this masker exists for.
+        assertThat(masker.mask(java.sql.Date.valueOf(java.time.LocalDate.of(1985, 7, 14)), birthDate))
+                .isInstanceOf(java.sql.Date.class)
+                .hasToString("1985-01-01");
+        assertThat(masker.mask(java.sql.Time.valueOf(java.time.LocalTime.of(14, 32, 8)), birthDate))
+                .isInstanceOf(java.sql.Time.class);
+        assertThat(masker.mask(java.sql.Timestamp.valueOf(java.time.LocalDateTime.of(1985, 7, 14, 9, 30)), birthDate))
+                .isInstanceOf(java.sql.Timestamp.class)
+                .asString()
+                .startsWith("1985-01-01");
+    }
+
     private static MaskContext context(PiiCategory category, MaskStrategy strategy) {
         return new MaskContext() {
             @Override

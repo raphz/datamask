@@ -11,21 +11,31 @@ import ch.raph.datamask.domain.MemberPlan;
 import ch.raph.datamask.domain.PiiDescriptor;
 import ch.raph.datamask.infrastructure.reflect.Types;
 import java.lang.reflect.Array;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URL;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+import java.util.Queue;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Walks an object graph and produces a masked copy of it.
@@ -60,7 +70,7 @@ public final class MaskingEngine {
 
     /** Returns a masked copy of the graph rooted at {@code value}. */
     public Object mask(Object value) {
-        return descend(value, "", 0, Collections.newSetFromMap(new IdentityHashMap<>()));
+        return descend(value, "", 0, new IdentityHashMap<>());
     }
 
     /** Masks the PII inside a string, leaving the rest of the text intact. */
@@ -89,7 +99,7 @@ public final class MaskingEngine {
         return observer;
     }
 
-    private Object descend(Object value, String path, int depth, Set<Object> inProgress) {
+    private Object descend(Object value, String path, int depth, Map<Object, Object> inProgress) {
         if (value == null) {
             return null;
         }
@@ -102,8 +112,11 @@ public final class MaskingEngine {
             case CharSequence text -> policy.scanUnannotatedText() ? sanitizer.sanitize(text, path) : value;
             case Collection<?> collection -> descendCollection(collection, path, depth, inProgress);
             case Map<?, ?> map -> descendMap(map, path, depth, inProgress);
-            case Optional<?> optional ->
-                optional.isPresent() ? Optional.ofNullable(descend(optional.get(), path, depth, inProgress)) : optional;
+            case Optional<?> optional -> descendOptional(optional, path, depth, inProgress);
+            // A URI is a leaf structurally, but its query string is one of the places PII hides in
+            // plain sight — `?email=john@doe.com` in a stored callback URL is the shape.
+            case URI uri -> policy.scanUnannotatedText() ? scanUri(uri, path) : value;
+            case URL url -> policy.scanUnannotatedText() ? scanUrl(url, path) : value;
             default -> {
                 Class<?> runtime = value.getClass();
                 if (runtime.isArray()) {
@@ -114,13 +127,16 @@ public final class MaskingEngine {
         };
     }
 
-    private Object descendObject(Object value, Class<?> runtime, String path, int depth, Set<Object> inProgress) {
-        // A graph that points back at itself cannot be reproduced as a copy. The back-reference
-        // becomes null: the original instance must not be planted inside the masked graph, because
-        // its members were masked into the copy, never in place — the original still carries raw PII.
-        if (!inProgress.add(value)) {
+    private Object descendObject(
+            Object value, Class<?> runtime, String path, int depth, Map<Object, Object> inProgress) {
+        // An object that points back at itself cannot have its cycle reproduced, because its copy
+        // does not exist until every member has been masked. So the back-reference becomes null.
+        // What it must never become is the original: that instance was never masked in place, and
+        // planting it inside the masked graph would put the raw values straight back.
+        if (inProgress.containsKey(value)) {
             return null;
         }
+        inProgress.put(value, null);
         try {
             MaskPlan plan = compiler.planFor(runtime);
             if (plan.isFailed()) {
@@ -172,28 +188,98 @@ public final class MaskingEngine {
         }
     }
 
-    private Object descendCollection(Collection<?> collection, String path, int depth, Set<Object> inProgress) {
-        Collection<Object> copy = newCollectionLike(collection);
-        int index = 0;
-        boolean changed = false;
-        for (Object element : collection) {
-            if (index >= policy.maxCollectionElements()) {
-                // Bounded on purpose: a runaway collection must not turn a log statement into an
-                // outage. Dropping the tail discloses nothing, unlike passing it through unmasked.
-                observer.onDepthLimitExceeded(path + "[" + index + "]");
-                changed = true;
-                break;
-            }
-            Object masked = descend(element, path + "[" + index + "]", depth + 1, inProgress);
-            changed |= masked != element;
-            copy.add(masked);
-            index++;
+    /**
+     * Masks what an {@code Optional} holds and re-wraps it — but hands back the <em>same</em>
+     * {@code Optional} when the contents did not change. Wrapping afresh would allocate a new
+     * instance on every clean graph, which reads as "changed" to the enclosing object and forces a
+     * rebuild of a record that carried no PII at all.
+     */
+    private Object descendOptional(Optional<?> optional, String path, int depth, Map<Object, Object> inProgress) {
+        if (optional.isEmpty()) {
+            return optional;
         }
-        return changed ? copy : collection;
+        Object inner = optional.get();
+        Object masked = descend(inner, path, depth, inProgress);
+        return masked == inner ? optional : Optional.ofNullable(masked);
     }
 
-    private Object descendMap(Map<?, ?> map, String path, int depth, Set<Object> inProgress) {
+    private Object scanUri(URI uri, String path) {
+        String text = uri.toString();
+        String safe = sanitizer.sanitize(text, path);
+        if (safe.equals(text)) {
+            return uri;
+        }
+        try {
+            return URI.create(safe);
+        } catch (IllegalArgumentException notAUri) {
+            // Masking left something that is no longer a URI. Handing back the original would
+            // disclose exactly what was just detected, so the value is dropped instead.
+            observer.onFailure(path, notAUri);
+            return null;
+        }
+    }
+
+    private Object scanUrl(URL url, String path) {
+        String text = url.toString();
+        String safe = sanitizer.sanitize(text, path);
+        if (safe.equals(text)) {
+            return url;
+        }
+        try {
+            return URI.create(safe).toURL();
+        } catch (IllegalArgumentException | MalformedURLException notAUrl) {
+            observer.onFailure(path, notAUrl);
+            return null;
+        }
+    }
+
+    private Object descendCollection(Collection<?> collection, String path, int depth, Map<Object, Object> inProgress) {
+        if (inProgress.containsKey(collection)) {
+            return inProgress.get(collection);
+        }
+        Collection<Object> copy = newCollectionLike(collection);
+        // Unlike an object, a container's copy exists before its contents are walked, so a
+        // back-reference can point at the copy and the cycle survives masking intact. Registering
+        // it is not a nicety: a list holding itself would otherwise unroll to the depth limit, and
+        // one holding itself twice would unroll exponentially and take the caller down with it.
+        inProgress.put(collection, copy);
+        try {
+            int index = 0;
+            boolean changed = false;
+            for (Object element : collection) {
+                if (index >= policy.maxCollectionElements()) {
+                    // Bounded on purpose: a runaway collection must not turn a log statement into an
+                    // outage. Dropping the tail discloses nothing, unlike passing it through unmasked.
+                    observer.onDepthLimitExceeded(path + "[" + index + "]");
+                    changed = true;
+                    break;
+                }
+                Object masked = descend(element, path + "[" + index + "]", depth + 1, inProgress);
+                changed |= masked != element;
+                changed |= !addMasked(copy, masked);
+                index++;
+            }
+            return changed ? copy : collection;
+        } finally {
+            inProgress.remove(collection);
+        }
+    }
+
+    private Object descendMap(Map<?, ?> map, String path, int depth, Map<Object, Object> inProgress) {
+        if (inProgress.containsKey(map)) {
+            return inProgress.get(map);
+        }
         Map<Object, Object> copy = newMapLike(map);
+        inProgress.put(map, copy);
+        try {
+            return descendEntries(map, copy, path, depth, inProgress);
+        } finally {
+            inProgress.remove(map);
+        }
+    }
+
+    private Object descendEntries(
+            Map<?, ?> map, Map<Object, Object> copy, String path, int depth, Map<Object, Object> inProgress) {
         int index = 0;
         boolean changed = false;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
@@ -213,27 +299,60 @@ public final class MaskingEngine {
                     : entry.getKey();
             Object masked = descend(entry.getValue(), entryPath, depth + 1, inProgress);
             changed |= masked != entry.getValue() || key != entry.getKey();
-            copy.put(key, masked);
+            changed |= !putMasked(copy, key, masked);
             index++;
         }
         return changed ? copy : map;
     }
 
-    private Object descendArray(Object array, String path, int depth, Set<Object> inProgress) {
+    /**
+     * Adds to the copy, dropping the element when the copy refuses it — {@code ArrayDeque} and a
+     * naturally ordered {@code TreeSet} reject null, and a comparator can reject a masked value.
+     * Dropping one element discloses nothing; letting the refusal propagate would take the whole
+     * enclosing object down a failure path it does not need.
+     */
+    private static boolean addMasked(Collection<Object> copy, Object element) {
+        try {
+            copy.add(element);
+            return true;
+        } catch (NullPointerException | ClassCastException | IllegalArgumentException refused) {
+            return false;
+        }
+    }
+
+    /** The map counterpart of {@link #addMasked}: {@code ConcurrentHashMap} rejects null on both sides. */
+    private static boolean putMasked(Map<Object, Object> copy, Object key, Object value) {
+        try {
+            copy.put(key, value);
+            return true;
+        } catch (NullPointerException | ClassCastException | IllegalArgumentException refused) {
+            return false;
+        }
+    }
+
+    private Object descendArray(Object array, String path, int depth, Map<Object, Object> inProgress) {
         Class<?> component = array.getClass().getComponentType();
         if (component.isPrimitive()) {
             return array;
         }
+        if (inProgress.containsKey(array)) {
+            return inProgress.get(array);
+        }
         int length = Array.getLength(array);
         Object copy = Array.newInstance(component, length);
-        boolean changed = false;
-        for (int i = 0; i < length; i++) {
-            Object element = Array.get(array, i);
-            Object masked = descend(element, path + "[" + i + "]", depth + 1, inProgress);
-            changed |= masked != element;
-            Array.set(copy, i, Coercion.toDeclaredType(masked, component));
+        inProgress.put(array, copy);
+        try {
+            boolean changed = false;
+            for (int i = 0; i < length; i++) {
+                Object element = Array.get(array, i);
+                Object masked = descend(element, path + "[" + i + "]", depth + 1, inProgress);
+                changed |= masked != element;
+                Array.set(copy, i, Coercion.toDeclaredType(masked, component));
+            }
+            return changed ? copy : array;
+        } finally {
+            inProgress.remove(array);
         }
-        return changed ? copy : array;
     }
 
     private Object maskLeaf(Object value, PiiDescriptor declared, Class<?> declaredType, String path) {
@@ -245,6 +364,12 @@ public final class MaskingEngine {
         }
         try {
             Class<?> runtime = value.getClass();
+            if (value instanceof Optional<?>
+                    || value instanceof OptionalInt
+                    || value instanceof OptionalLong
+                    || value instanceof OptionalDouble) {
+                return maskOptional(value, declared, path);
+            }
             if (Types.isSingleStringValueObject(runtime)) {
                 return maskValueObject(value, runtime, declared, path);
             }
@@ -255,6 +380,47 @@ public final class MaskingEngine {
         } catch (Throwable failure) {
             return onMaskFailure(path, failure);
         }
+    }
+
+    /**
+     * Masks what an annotated {@code Optional} holds, then re-wraps it — the same treatment a
+     * single-component value object gets, and for the same reason. Handing the wrapper itself to a
+     * masker would produce text that does not fit an {@code Optional} slot, and the coercion that
+     * follows would turn the whole member into a {@code null} {@code Optional}: an empty box is the
+     * honest answer, a null one is a {@code NullPointerException} at the call site.
+     *
+     * <p>The primitive variants come back holding their type's zero, which is what masking any
+     * numeric member yields.
+     */
+    private Object maskOptional(Object value, PiiDescriptor declared, String path) {
+        return switch (value) {
+            case Optional<?> optional -> {
+                if (optional.isEmpty()) {
+                    yield optional;
+                }
+                Object inner = optional.get();
+                Object masked = maskLeaf(inner, declared, inner.getClass(), path);
+                yield masked == inner ? optional : Optional.ofNullable(masked);
+            }
+            case OptionalInt optional ->
+                optional.isEmpty()
+                        ? optional
+                        : OptionalInt.of((int) maskedNumber(optional.getAsInt(), declared, path, int.class));
+            case OptionalLong optional ->
+                optional.isEmpty()
+                        ? optional
+                        : OptionalLong.of((long) maskedNumber(optional.getAsLong(), declared, path, long.class));
+            case OptionalDouble optional ->
+                optional.isEmpty()
+                        ? optional
+                        : OptionalDouble.of(
+                                (double) maskedNumber(optional.getAsDouble(), declared, path, double.class));
+            default -> value;
+        };
+    }
+
+    private Object maskedNumber(Object value, PiiDescriptor declared, String path, Class<?> primitive) {
+        return Coercion.toDeclaredType(maskLeaf(value, declared, primitive, path), primitive);
     }
 
     /**
@@ -369,18 +535,38 @@ public final class MaskingEngine {
         };
     }
 
+    /**
+     * A copy shaped like the source. The shape is not cosmetic: the masked collection has to be
+     * assignable to the member it came from, and a {@code Deque} that came back as an
+     * {@code ArrayList} fails that check and takes the whole field to null.
+     *
+     * <p>{@code List} is tested before {@code Deque} because {@code LinkedList} is both, and a
+     * field declared {@code List} is the far more common of the two.
+     */
     @SuppressWarnings("unchecked")
     private static Collection<Object> newCollectionLike(Collection<?> source) {
         if (source instanceof SortedSet<?> sorted) {
             return new TreeSet<>((Comparator<Object>) sorted.comparator());
         }
-        return source instanceof Set ? new LinkedHashSet<>() : new ArrayList<>(source.size());
+        if (source instanceof Set) {
+            return new LinkedHashSet<>();
+        }
+        if (source instanceof List) {
+            return new ArrayList<>(source.size());
+        }
+        if (source instanceof Deque || source instanceof Queue) {
+            return new ArrayDeque<>(Math.max(1, source.size()));
+        }
+        return new ArrayList<>(source.size());
     }
 
     @SuppressWarnings("unchecked")
     private static Map<Object, Object> newMapLike(Map<?, ?> source) {
         if (source instanceof SortedMap<?, ?> sorted) {
             return new TreeMap<>((Comparator<Object>) sorted.comparator());
+        }
+        if (source instanceof ConcurrentMap) {
+            return new ConcurrentHashMap<>();
         }
         return new LinkedHashMap<>();
     }

@@ -106,7 +106,10 @@ public final class Banking {
         }
     }
 
-    /** Readable members but no way to rebuild: the constructor does not match the field order. */
+    /**
+     * Readable members but no way to rebuild: a field the constructor computes rather than accepts,
+     * final fields so there is no setter path, and no no-argument constructor.
+     */
     public static final class Unrebuildable {
 
         @PII(category = PiiCategory.EMAIL)
@@ -114,7 +117,39 @@ public final class Banking {
 
         private final int flags;
 
+        private final long version;
+
         public Unrebuildable(int flags, String email) {
+            this.flags = flags;
+            this.email = email;
+            this.version = 1L;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public int getFlags() {
+            return flags;
+        }
+
+        public long getVersion() {
+            return version;
+        }
+    }
+
+    /**
+     * An all-arguments constructor that takes the fields in a different order than they are
+     * declared — which Lombok's {@code @Builder} and hand-written code both produce constantly.
+     */
+    public static final class ReorderedConstructor {
+
+        @PII(category = PiiCategory.EMAIL)
+        private final String email;
+
+        private final int flags;
+
+        public ReorderedConstructor(int flags, String email) {
             this.flags = flags;
             this.email = email;
         }
@@ -125,6 +160,31 @@ public final class Banking {
 
         public int getFlags() {
             return flags;
+        }
+    }
+
+    /**
+     * Two same-typed members and a constructor whose parameter names match neither — the shape
+     * where matching by position would silently swap one member's value into the other.
+     */
+    public static final class UnmatchableConstructor {
+
+        @PII(category = PiiCategory.EMAIL)
+        private final String email;
+
+        private final String reference;
+
+        public UnmatchableConstructor(String first, String second) {
+            this.reference = first;
+            this.email = second;
+        }
+
+        public String getEmail() {
+            return email;
+        }
+
+        public String getReference() {
+            return reference;
         }
     }
 

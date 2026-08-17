@@ -26,8 +26,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>Configuration keys</h2>
  *
- * The four keys below are read from the producer's configuration map. They share that map with every
- * other plugin, which is why each one is prefixed.
+ * The four keys below are read from the configuration map of the client the plugin belongs to — a
+ * producer's for the serializer and {@link MaskingProducerInterceptor}, a consumer's for
+ * {@link MaskingConsumerInterceptor}. They share that map with every other plugin, which is why each
+ * one is prefixed.
  */
 public final class DataMaskKafka {
 
@@ -37,6 +39,9 @@ public final class DataMaskKafka {
      * them survive compaction. Switch it on only with a deterministic strategy — {@code HASH} or
      * {@code TOKENIZE} — which keeps distinct keys distinct. A {@code REDACT}ed key collapses every
      * record onto one key, and a compacted topic then keeps only the last of them.
+     *
+     * <p>On a consumer the partitioning is already decided, but application code deduplicates, groups
+     * and correlates by key, so it is off there for the same reason with a different consequence.
      */
     public static final String MASK_KEYS_CONFIG = "datamask.mask.keys";
 

@@ -51,6 +51,9 @@ import org.slf4j.LoggerFactory;
  * says what actually happened. A failed send is retried or surfaced; a published record is permanent
  * and has already been read.
  *
+ * <p>The drop is also reported to the {@code MaskingObserver} as {@code kafka:record/<topic>}, so it
+ * reaches metrics and an audit sink rather than only a log file.
+ *
  * <p>Failures are rare by construction: a masker that throws is resolved according to
  * {@code MaskingPolicy#failureMode}, which by default redacts. What reaches here is a payload the
  * engine could not rebuild at all — or {@code FailureMode.THROW}, configured by someone who wanted the
@@ -107,7 +110,27 @@ public final class MaskingProducerInterceptor<K, V> implements ProducerIntercept
                     record.topic(),
                     record.value() != null ? record.value().getClass().getName() : "null",
                     failure);
+            report(record.topic(), failure);
             return null;
+        }
+    }
+
+    /**
+     * The drop goes to the {@link ch.raph.datamask.domain.MaskingObserver} as well as to the log, so a
+     * metrics or audit sink learns that a record was dropped rather than only a log file that nobody
+     * has an alert on. The path names the whole record, {@code kafka:record/<topic>}, because that is
+     * what was lost — a header failure reports itself per header and never reaches here.
+     *
+     * <p>Guarded, and this guard is the point rather than defensiveness: an observer that threw would
+     * leave {@code onSend} throwing, and Kafka answers a throwing {@code onSend} by sending the record
+     * it had before the interceptor ran — the unmasked one. The same is true of resolving the masker,
+     * which is why that happens in here too.
+     */
+    private void report(String topic, Throwable failure) {
+        try {
+            masker().observer().onFailure(RecordMasker.path("record", topic), failure);
+        } catch (Throwable observerFailed) {
+            LOG.error("datamask: the observer threw while being told about a dropped record", observerFailed);
         }
     }
 

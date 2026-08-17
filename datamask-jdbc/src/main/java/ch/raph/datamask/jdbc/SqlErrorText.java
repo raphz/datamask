@@ -4,6 +4,8 @@ import ch.raph.datamask.api.MaskStrategy;
 import ch.raph.datamask.api.PiiCategory;
 import ch.raph.datamask.application.MaskingEngine;
 import ch.raph.datamask.domain.MaskingObserver;
+import java.util.List;
+import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,6 +40,24 @@ final class SqlErrorText {
      */
     private static final Pattern QUOTED = Pattern.compile("\"[^\"]*\"");
 
+    /**
+     * A single-quoted span. PostgreSQL is the driver that renders the offending row structurally;
+     * every other one quotes the value in single quotes and says nothing else about it — MySQL's
+     * {@code Duplicate entry 'john@x.com' for key 'customer.email_uq'}, MariaDB's copy of the same
+     * message, H2's {@code ... VALUES ('john@x.com')}. A quoted value is therefore the only shape
+     * there is to match, and the value is not required to be recognisable to a detector: a surname
+     * or an internal reference is a row value like any other.
+     */
+    private static final Pattern SINGLE_QUOTED = Pattern.compile("'[^']*'", Pattern.DOTALL);
+
+    /**
+     * A bare SQL identifier, optionally qualified — {@code email}, {@code customer.email_uq}. The
+     * leading character may not be a digit, which is what a plain unquoted SQL identifier requires
+     * and what keeps a numeric id from being mistaken for one.
+     */
+    private static final Pattern IDENTIFIER =
+            Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]{0,63}(?:\\.[A-Za-z_$][A-Za-z0-9_$]{0,63}){0,2}");
+
     private final MaskingEngine engine;
     private final MaskingObserver observer;
 
@@ -57,6 +77,19 @@ final class SqlErrorText {
      */
     String primary(String message, String path) {
         return scan(maskKeyValues(message, path), path);
+    }
+
+    /**
+     * The primary message of an error that is <em>about a value</em> — SQL state class 22 (data
+     * exception) or 23 (integrity constraint violation) — from a driver that is not PostgreSQL.
+     *
+     * <p>Same as {@link #primary}, plus the single-quoted spans. Without this the module's promise
+     * holds only against PostgreSQL: {@code Duplicate entry 'john@x.com' for key 'customer.email'}
+     * has no {@code (columns)=(values)} structure to match, and a value no detector recognises —
+     * a surname, an internal reference — would reach the log verbatim.
+     */
+    String primaryWithQuotedValues(String message, String path) {
+        return scan(maskQuotedValues(maskKeyValues(message, path), path), path);
     }
 
     /**
@@ -110,6 +143,70 @@ final class SqlErrorText {
         // about what kind. UNSPECIFIED with REDACT is the fail-closed reading of that.
         observer.onMasked(path, PiiCategory.UNSPECIFIED, MaskStrategy.REDACT);
         return matcher.reset().replaceAll(Matcher.quoteReplacement(")=(" + placeholder() + ")"));
+    }
+
+    /**
+     * Redacts every single-quoted span, keeping at most one: a trailing span that is a bare SQL
+     * identifier, which is how MySQL and MariaDB name the column or key that did the rejecting.
+     */
+    private String maskQuotedValues(String text, String path) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        List<MatchResult> spans = SINGLE_QUOTED.matcher(text).results().toList();
+        if (spans.isEmpty()) {
+            return text;
+        }
+        int kept = identifierToKeep(text, spans);
+        if (kept == 0 && spans.size() == 1) {
+            return text;
+        }
+
+        StringBuilder masked = new StringBuilder(text.length());
+        int cursor = 0;
+        for (int i = 0; i < spans.size(); i++) {
+            if (i == kept) {
+                continue;
+            }
+            MatchResult span = spans.get(i);
+            masked.append(text, cursor, span.start())
+                    .append('\'')
+                    .append(placeholder())
+                    .append('\'');
+            cursor = span.end();
+        }
+        masked.append(text, cursor, text.length());
+        // Same reading as the row structure: this is a column value and the error says nothing
+        // about what kind, so UNSPECIFIED with REDACT is what the observer is told.
+        observer.onMasked(path, PiiCategory.UNSPECIFIED, MaskStrategy.REDACT);
+        return masked.toString();
+    }
+
+    /**
+     * The index of the one span worth keeping, or {@code -1} when every one of them goes.
+     *
+     * <p>Only the <em>last</em> span is eligible, because these drivers say what was given before
+     * they say what rejected it — {@code Duplicate entry 'x' for key 'k'}, {@code Incorrect integer
+     * value: 'x' for column 'c' at row 1} — so anything before the last span is a value. And it is
+     * kept only when it is a bare identifier: a name, not something with an {@code @}, a space or a
+     * digit in front of it. What survives is therefore the column and constraint names, which are
+     * what makes the error still worth reading.
+     *
+     * <p>A span inside a double-quoted region is never eligible. There the quoted text is SQL
+     * rather than prose, as in {@link #where}, and H2 renders the offending value exactly that way:
+     * {@code Value too long for column "EMAIL CHARACTER VARYING(5)": "'Mustermann' (10)"}.
+     *
+     * <p>The residual case is a value that is a single identifier-shaped token and the last thing
+     * the message quotes. Content scanning runs over what is kept and catches it when a detector
+     * recognises it; a bare surname in that position would survive, which is the price of keeping
+     * the key name that every one of these messages puts in exactly the same place.
+     */
+    private static int identifierToKeep(String text, List<MatchResult> spans) {
+        MatchResult last = spans.getLast();
+        String content = text.substring(last.start() + 1, last.end() - 1);
+        boolean insideSqlText =
+                text.substring(0, last.start()).chars().filter(c -> c == '"').count() % 2 == 1;
+        return !insideSqlText && IDENTIFIER.matcher(content).matches() ? spans.size() - 1 : -1;
     }
 
     /**

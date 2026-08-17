@@ -16,9 +16,11 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 
 /**
  * Turns a record into one that carries no PII.
@@ -28,10 +30,11 @@ import org.apache.kafka.common.header.Headers;
  * ProducerRecord<String, Payment> safe = masker.mask(record);
  * }
  *
- * <p>{@link MaskingProducerInterceptor} applies this to everything a producer sends, and
- * {@link MaskingSerializer} uses {@link #maskValue} on its own. It is public because the same job
- * comes up elsewhere: a Kafka Streams {@code Processor}, a Spring {@code ProducerListener}, a bridge
- * that forwards records between clusters.
+ * <p>{@link MaskingProducerInterceptor} applies this to everything a producer sends,
+ * {@link MaskingConsumerInterceptor} to everything a consumer polls, and {@link MaskingSerializer}
+ * uses {@link #maskValue} on its own. It is public because the same job comes up elsewhere: a Kafka
+ * Streams {@code Processor}, a Spring {@code ProducerListener}, a bridge that forwards records
+ * between clusters.
  *
  * <h2>What is covered</h2>
  *
@@ -121,6 +124,57 @@ public final class RecordMasker {
                 maskedKey,
                 maskedValue,
                 maskedHeaders != null ? maskedHeaders : asList(headers));
+    }
+
+    /**
+     * The same record when it carried no PII, a masked copy of it otherwise — for a record on its way
+     * <em>in</em>.
+     *
+     * <p>The value is already deserialized by the time a consumer sees it, so this is the same
+     * object-graph masking the producer side does, from what {@code @PII} declares rather than by
+     * searching the bytes. What it is for is the record whose PII this process never wanted: a topic
+     * with unmasked history, a consumer that only routes or counts, a framework that will put the
+     * whole record into a log line or a dead-letter topic if the listener throws. See
+     * {@link MaskingConsumerInterceptor} for when that is the right trade and when it is not.
+     *
+     * <p>Everything else about the record is carried across untouched — partition, offset, timestamp,
+     * leader epoch, delivery count, and the serialized sizes, which describe the bytes that were
+     * actually received and stay true of them.
+     */
+    public <K, V> ConsumerRecord<K, V> mask(ConsumerRecord<K, V> record) {
+        Objects.requireNonNull(record, "record");
+        String topic = record.topic();
+
+        V value = record.value();
+        V maskedValue = maskValue(value, topic);
+
+        K key = record.key();
+        K maskedKey = maskKeys ? maskKey(key, topic) : key;
+
+        Headers headers = record.headers();
+        List<Header> maskedHeaders = maskHeaders(headers, topic);
+
+        if (maskedValue == value && maskedKey == key && maskedHeaders == null) {
+            return record;
+        }
+
+        // RecordHeaders is Kafka's own and lives in an internals package, which this module otherwise
+        // stays off — but ConsumerRecord's only public constructor takes a Headers, and this is the
+        // only implementation Kafka ships. Unlike Header, which is a name and some bytes, there is no
+        // two-line alternative that is not a reimplementation of a mutable collection.
+        return new ConsumerRecord<>(
+                topic,
+                record.partition(),
+                record.offset(),
+                record.timestamp(),
+                record.timestampType(),
+                record.serializedKeySize(),
+                record.serializedValueSize(),
+                maskedKey,
+                maskedValue,
+                maskedHeaders != null ? new RecordHeaders(maskedHeaders) : headers,
+                record.leaderEpoch(),
+                record.deliveryCount());
     }
 
     /**
@@ -262,8 +316,17 @@ public final class RecordMasker {
         return engine.policy().redactionPlaceholder().getBytes(StandardCharsets.UTF_8);
     }
 
+    /**
+     * The observer this masker reports to, so an interceptor can report a failure of its own through
+     * the same sink. Package-private: a caller that wants the observer for anything else already has
+     * the engine it built this from.
+     */
+    MaskingObserver observer() {
+        return observer;
+    }
+
     /** Names the site the value came from, which is what makes an observer report actionable. */
-    private static String path(String part, String topic) {
+    static String path(String part, String topic) {
         return "kafka:" + part + "/" + topic;
     }
 

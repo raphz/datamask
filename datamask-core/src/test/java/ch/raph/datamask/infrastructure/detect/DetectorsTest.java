@@ -65,4 +65,29 @@ class DetectorsTest {
         assertThat(Detectors.ipv6().detect("mac aa:bb:cc:dd:ee:ff seen")).isEmpty();
         assertThat(Detectors.ipv6().detect("call std::vector::push_back")).isEmpty();
     }
+
+    @Test
+    @DisplayName("does not report ordinary uppercase words as BICs")
+    void ignoresUppercaseProseAsBic() {
+        // Each of these passes the ISO country check by accident — KI is Kiribati, SC the
+        // Seychelles, CA Canada, OM Oman — and each appears constantly in real log output.
+        assertThat(Detectors.bic().detect("account type CHECKING selected")).isEmpty();
+        assertThat(Detectors.bic().detect("DEUTSCHE BANK response received")).isEmpty();
+        assertThat(Detectors.bic().detect("APPLICATION started")).isEmpty();
+        assertThat(Detectors.bic().detect("table PUBLIC.CUSTOMER(EMAIL)")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("still detects a BIC in the two shapes real ones take")
+    void detectsRealBics() {
+        assertThat(Detectors.bic().detect("route via UBSWCHZH80A today")).hasSize(1);
+        assertThat(Detectors.bic().detect("route via DEUTDEFFXXX today")).hasSize(1);
+        assertThat(Detectors.bic().detect("route via DEUTDEFF500 today")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("does not report a BIC-shaped run whose country code is not an ISO one")
+    void ignoresUnknownCountryInBic() {
+        assertThat(Detectors.bic().detect("code ABCDZZ12 rejected")).isEmpty();
+    }
 }

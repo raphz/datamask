@@ -18,6 +18,7 @@ import org.apache.logging.log4j.core.config.DefaultConfiguration;
 import org.apache.logging.log4j.core.impl.ContextDataFactory;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.core.impl.MutableLogEvent;
+import org.apache.logging.log4j.core.impl.ThrowableProxy;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.apache.logging.log4j.message.ObjectMessage;
 import org.apache.logging.log4j.message.ParameterizedMessage;
@@ -413,6 +414,33 @@ class LogEventMaskerTest {
                     .doesNotContain(IBAN)
                     .startsWith(Banking.UnreconstructableException.class.getName())
                     .contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("names the original type in the stand-in's message, which is what a JSON layout writes")
+        void standInMessageNamesTheOriginalType() {
+            LogEvent masked = masker.mask(thrown(new Banking.UnreconstructableException(null, 0)));
+
+            // exception.class in a JSON layout is read off getClass() and can only be this stand-in's;
+            // the message is the one field the original type can still be carried in.
+            assertThat(masked.getThrown().getMessage())
+                    .doesNotContain(IBAN)
+                    .startsWith(Banking.UnreconstructableException.class.getName() + ": ")
+                    .contains(MASKED_IBAN);
+        }
+
+        @Test
+        @DisplayName("names the original type through the throwable proxy every layout is derived from")
+        @SuppressWarnings("deprecation") // ThrowableProxy is on its way out of log4j2, but it is what
+        // the layouts in the field still render an exception through, so it is what this has to hold for.
+        void standInNamesTheOriginalTypeThroughTheProxy() {
+            LogEvent masked = masker.mask(thrown(new Banking.UnreconstructableException(null, 0)));
+
+            ThrowableProxy proxy = new ThrowableProxy(masked.getThrown());
+
+            assertThat(proxy.getMessage())
+                    .doesNotContain(IBAN)
+                    .contains(Banking.UnreconstructableException.class.getName());
         }
 
         @Test

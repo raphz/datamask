@@ -102,13 +102,35 @@ send instead, because a null record value is a tombstone, not less information).
 instance* and never calls the rebuilder. That is why a PII-free graph costs no allocation, and why
 an unrebuildable type that happens to contain no PII still works.
 
-**Traversal safety.** Cycle detection via an identity set with enter/exit scoping (a shared node in
-a DAG is not a cycle); a back-reference becomes `null` in the copy — never the original instance,
-whose members are still raw. Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded
-by `maxCollectionElements`; the tail is dropped, which discloses nothing. Map keys are masked only
-when `maskMapKeys` is on, because masking them changes lookup semantics — and map *paths* are
-positional (`{0}`, `{0}{key}`), never the key itself, because paths reach observers and exception
-messages.
+**Traversal safety.** Cycle detection via an identity **map** from original to copy, with enter/exit
+scoping (a shared node in a DAG is not a cycle). The two halves differ on purpose:
+
+- An **object** back-reference becomes `null`. Its copy does not exist until every member is masked,
+  so there is nothing to point at — and it must never become the original, whose members are still
+  raw.
+- A **container** (array, collection, map) registers its copy *before* walking, so a back-reference
+  points at the copy and the cycle is reproduced against masked values. This is not a nicety: without
+  it a self-referential list unrolled to `maxDepth`, and one referencing itself twice unrolled
+  exponentially and took the caller down with it.
+
+Depth bounded by `MaskingPolicy.maxDepth`. Collections and maps bounded by `maxCollectionElements`;
+the tail is dropped, which discloses nothing. A copy that refuses a masked element — `ArrayDeque` and
+a naturally ordered `TreeSet` reject null, `ConcurrentHashMap` rejects it on both sides — drops that
+element rather than failing the enclosing object. Map keys are masked when `maskMapKeys` is on, which
+`strict()` enables and `relaxed()` does not; map *paths* are positional (`{0}`, `{0}{key}`), never
+the key itself, because paths reach observers and exception messages.
+
+**Container shape is preserved, because it has to be.** `newCollectionLike` maps `SortedSet`→`TreeSet`,
+`Set`→`LinkedHashSet`, `List`→`ArrayList`, `Deque`/`Queue`→`ArrayDeque` (`List` is tested first —
+`LinkedList` is both), and `newMapLike` maps `SortedMap`→`TreeMap`, `ConcurrentMap`→`ConcurrentHashMap`.
+`Coercion` then fits whatever came back to the declared type. A shape mismatch is not cosmetic: it
+fails the declared-type check and takes the entire member to `null`, which looks exactly like a
+successful mask.
+
+**`Optional` is masked through, not around.** `descend` returns the *same* `Optional` when its
+contents did not change, and `maskLeaf` unwraps an annotated one, masks the value and re-wraps —
+handing the wrapper to a masker produces text that cannot fit an `Optional` slot, and the coercion
+that follows nulls the whole member. `OptionalInt`/`Long`/`Double` come back holding their zero.
 
 **Type coercion** (`Coercion.toDeclaredType`). Masking naturally produces text, but the member it
 goes back into may be a `BigDecimal` or an `int`. Rather than refuse, the value becomes the type's
@@ -280,8 +302,21 @@ interface MaskContext { PiiCategory category(); Sensitivity sensitivity(); MaskS
 (`Masker.class`), `keep` (-1 = category default), `padding` (`'*'`), `replacement` (`""`), `purpose`
 (`""`). `@NoMask` requires a `justification`.
 
-`MaskKey`: `ofSecret(String)` (rejects under 16 bytes), `of(byte[])`, `ephemeral()`, `spec()`,
-`isEphemeral()`.
+`MaskKey`: `ofSecret(String)` / `ofSecret(char[])` (reject under 16 bytes; prefer the `char[]` one —
+a `String` cannot be wiped), `of(byte[])`, `ephemeral()`, `forPurpose(String)`, `spec()` (a fresh
+one per call, so `destroy()` can promise something), `id()`, `algorithm()`, `destroy()`,
+`isDestroyed()`, `isEphemeral()`.
+
+`HmacPseudonymizer` writes `~<keyId>:<digest>`. Take a keyring — `new HmacPseudonymizer(current,
+previous)` — and use `matches(value, pseudonym)` to confirm a surrogate issued before a rotation;
+`DataMask.pseudonymMatches` is the facade for it. **Do not drop the key id from the format**: without
+it, rotating a secret silently turns every pseudonym written beforehand into an unjoinable stranger,
+with no error and nothing in a log to explain it.
+
+`TokenVault`: the default is `RejectingTokenVault`, which **refuses**. `InMemoryTokenVault` is opt-in
+via `Builder.vault(...)`, bounded by capacity and a 15-minute TTL. Never make the in-memory one the
+default again — `TOKENIZE` appearing to work while raw PII accumulates in a heap map, with a
+`detokenize` any caller can reach, is worse than it failing.
 
 ## Writing an integration module
 

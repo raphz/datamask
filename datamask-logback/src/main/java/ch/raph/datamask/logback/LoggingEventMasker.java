@@ -124,7 +124,9 @@ public final class LoggingEventMasker {
 
         // Formatting is left to the event itself when neither half of the message changed, so a line
         // masked only in its MDC is not formatted twice.
-        String formattedMessage = bodyChanged ? format(maskedMessage, maskedArguments) : event.getFormattedMessage();
+        String formattedMessage = bodyChanged
+                ? format(maskedMessage, maskedArguments, arguments, maskedThrowable)
+                : event.getFormattedMessage();
         return new MaskedLoggingEvent(
                 event,
                 maskedMessage,
@@ -292,10 +294,30 @@ public final class LoggingEventMasker {
         return engine.maskText(text, path);
     }
 
-    private static String format(String message, Object[] arguments) {
+    /**
+     * Formats the masked line the way logback would have formatted the same event.
+     *
+     * <p>A masked line has to <em>read</em> like the unmasked one: the same argument fills the same
+     * placeholder, and an argument renders the same way. Both come from going through logback's own
+     * {@code MessageFormatter}, which is what makes an {@code int[]} argument render as
+     * {@code [1, 2, 3]} rather than as its identity, and deeply for nested arrays. Its guard against a
+     * self-referential array applies too, though the engine has already broken such a cycle into a
+     * depth-bounded tree by the time the array gets here.
+     *
+     * <p>The one rule the formatter does not carry on its own is
+     * {@code LoggingEvent#getFormattedMessage()}'s: a trailing throwable argument is dropped from the
+     * rendering unless it also became the event's throwable proxy. It is decided here on the
+     * <em>original</em> array, because masking rewrites a throwable whose message carried a value into
+     * text, and which argument is a throwable must not depend on whether it needed masking.
+     */
+    private static String format(
+            String message, Object[] arguments, Object[] original, IThrowableProxy throwableProxy) {
         if (message == null || arguments == null || arguments.length == 0) {
             return message;
         }
-        return MessageFormatter.basicArrayFormat(message, arguments);
+        Object[] rendered = throwableProxy == null && MessageFormatter.getThrowableCandidate(original) != null
+                ? MessageFormatter.trimmedCopy(arguments)
+                : arguments;
+        return MessageFormatter.basicArrayFormat(message, rendered);
     }
 }

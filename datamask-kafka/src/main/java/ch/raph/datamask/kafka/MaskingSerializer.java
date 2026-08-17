@@ -29,6 +29,10 @@ import org.apache.kafka.common.serialization.Serializer;
  * subscribed — a list nobody enumerated. Masking here is what makes those bytes safe before they are
  * anything but bytes.
  *
+ * <p>For a Kafka Streams topology, which asks for a {@code Serde} rather than a serializer, use
+ * {@link MaskingSerde} — it is this class on the write side with the delegate's own deserializer on
+ * the read side.
+ *
  * <h2>Keys</h2>
  *
  * This serializer masks whatever it is handed, so configuring it as {@code key.serializer} is itself

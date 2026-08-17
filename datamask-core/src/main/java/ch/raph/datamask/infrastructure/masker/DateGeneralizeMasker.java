@@ -36,21 +36,26 @@ public final class DateGeneralizeMasker implements Masker {
             case YearMonth yearMonth -> YearMonth.of(yearMonth.getYear(), 1);
             case OffsetDateTime offset -> OffsetDateTime.of(offset.getYear(), 1, 1, 0, 0, 0, 0, offset.getOffset());
             case ZonedDateTime zoned -> ZonedDateTime.of(zoned.getYear(), 1, 1, 0, 0, 0, 0, zoned.getZone());
-            case Instant instant ->
-                instant.atZone(ZoneOffset.UTC)
-                        .withDayOfYear(1)
-                        .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
-                        .toInstant();
-            case java.util.Date legacy ->
-                java.util.Date.from(legacy.toInstant()
-                        .atZone(ZoneOffset.UTC)
-                        .withDayOfYear(1)
-                        .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
-                        .toInstant());
+            case Instant instant -> startOfYear(instant);
+            // The three java.sql types come before java.util.Date, which two of them extend. It is
+            // not a refinement: java.sql.Date and java.sql.Time throw from toInstant() by contract,
+            // and java.sql.Date is the single most common type a legacy schema gives a birth date.
+            case java.sql.Date sqlDate ->
+                java.sql.Date.valueOf(sqlDate.toLocalDate().withDayOfYear(1));
+            case java.sql.Time sqlTime -> java.sql.Time.valueOf(java.time.LocalTime.MIDNIGHT);
+            case java.sql.Timestamp timestamp -> java.sql.Timestamp.from(startOfYear(timestamp.toInstant()));
+            case java.util.Date legacy -> java.util.Date.from(startOfYear(legacy.toInstant()));
             case CharSequence text -> generalizeText(text.toString(), context);
             case Temporal ignored -> Masks.placeholder(context);
             default -> Masks.placeholder(context);
         };
+    }
+
+    private static Instant startOfYear(Instant instant) {
+        return instant.atZone(ZoneOffset.UTC)
+                .withDayOfYear(1)
+                .truncatedTo(java.time.temporal.ChronoUnit.DAYS)
+                .toInstant();
     }
 
     private Object generalizeText(String text, MaskContext context) {

@@ -151,16 +151,38 @@ public final class Detectors {
     }
 
     /**
-     * A BIC is four letters, an ISO country code, then two or five alphanumerics. Validating the
-     * country against the JDK's ISO list is what stops it matching ordinary uppercase prose.
+     * A BIC is four letters, an ISO country code, then two or five alphanumerics.
+     *
+     * <p>The country check alone was not enough. An all-uppercase word passes it whenever its fifth
+     * and sixth letters happen to spell an ISO code, which ordinary log prose does constantly:
+     * {@code CHECKING} is Kiribati, {@code DEUTSCHE} is the Seychelles, {@code APPLICATION} is
+     * Canada. So a candidate must additionally carry a digit, or end in the {@code XXX} that stands
+     * for a primary office — the two shapes real BICs overwhelmingly take, and shapes an English
+     * word essentially never does.
+     *
+     * <p>The cost is deliberate: an all-letter eight-character BIC such as {@code DEUTDEFF} is no
+     * longer reported in free text. A BIC names a bank rather than a person, it is still masked
+     * wherever it is declared, and the alternative failure is the one that matters — a scanner that
+     * garbles every capitalised word in a log is one an operator switches off, taking every other
+     * detector with it.
      */
     public static PiiDetector bic() {
         return new RegexDetector(
                 "bic",
                 PiiCategory.BIC,
                 Pattern.compile("\\b([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\\b"),
-                candidate -> ISO_COUNTRIES.contains(candidate.substring(4, 6)),
+                Detectors::validBic,
                 true);
+    }
+
+    private static boolean validBic(String candidate) {
+        if (!ISO_COUNTRIES.contains(candidate.substring(4, 6))) {
+            return false;
+        }
+        if (candidate.length() == 11 && candidate.endsWith("XXX")) {
+            return true;
+        }
+        return candidate.chars().anyMatch(Character::isDigit);
     }
 
     public static PiiDetector jsonWebToken() {

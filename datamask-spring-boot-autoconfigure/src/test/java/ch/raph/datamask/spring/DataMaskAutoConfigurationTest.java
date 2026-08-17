@@ -18,6 +18,8 @@ import ch.raph.datamask.domain.PiiDetector;
 import ch.raph.datamask.domain.PiiFinding;
 import ch.raph.datamask.domain.PolicyOverrides;
 import ch.raph.datamask.domain.TokenVault;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.diagnostics.FailureAnalysis;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -91,14 +94,27 @@ class DataMaskAutoConfigurationTest {
         }
 
         @Test
-        @DisplayName("rejects a secret too short to pseudonymise with, rather than padding it into one")
+        @DisplayName("rejects a secret too short to pseudonymise with as a failure the analyzer recognises, "
+                + "rather than as a stack trace out of the crypto adapter")
         void rejectsAShortSecret() {
-            runner.withPropertyValues("datamask.secret=short")
-                    .run(context -> assertThat(context)
-                            .hasFailed()
-                            .getFailure()
-                            .rootCause()
-                            .isInstanceOf(IllegalArgumentException.class));
+            runner.withPropertyValues("datamask.secret=hunter2").run(context -> {
+                assertThat(context).hasFailed();
+                FailureAnalysis analysis = new ShortMaskSecretFailureAnalyzer().analyze(context.getStartupFailure());
+                assertThat(analysis)
+                        .as("the startup failure carries no analyzable cause")
+                        .isNotNull();
+                assertThat(analysis.getAction()).contains("datamask.secret");
+            });
+        }
+
+        @Test
+        @DisplayName("puts no part of the rejected secret into the failure, because the whole of that trace "
+                + "is on its way to a log")
+        void theShortSecretFailureCarriesNothingOfTheValue() {
+            runner.withPropertyValues("datamask.secret=hunter2")
+                    .run(context -> assertThat(stackTraceOf(context.getStartupFailure()))
+                            .doesNotContain("hunter2")
+                            .doesNotContain("hunter"));
         }
     }
 
@@ -275,6 +291,13 @@ class DataMaskAutoConfigurationTest {
     }
 
     // --- fixtures ------------------------------------------------------------------------------
+
+    /** What a startup failure actually looks like once something logs it. */
+    private static String stackTraceOf(Throwable failure) {
+        StringWriter rendered = new StringWriter();
+        failure.printStackTrace(new PrintWriter(rendered));
+        return rendered.toString();
+    }
 
     record Customer(@PII(category = PiiCategory.EMAIL) String email) {}
 
